@@ -3,7 +3,7 @@
  * field optional, every nested object uses .passthrough() to allow
  * firmware/hardware-specific fields to flow through unchanged).
  *
- * Verified against UniFi Network API 10.5.43. Where the docs collapse
+ * Verified against UniFi Network API 10.6.106. Where the docs collapse
  * nested arrays/objects (e.g. interfaces.ports[], radios[]), the schema
  * uses passthrough records so the contract doesn't lock to fields we
  * haven't verified.
@@ -170,7 +170,7 @@ const WifiBroadcast = z
 
 const ApplicationInfo = z
   .object({
-    // Live-verified (10.5.43): only applicationVersion is returned.
+    // Live-verified (10.6.106): only applicationVersion is returned.
     applicationVersion: z.string().optional(),
   })
   .passthrough();
@@ -197,8 +197,9 @@ const Network = z
     mdnsForwardingEnabled: z.boolean().optional(),
     cellularBackupEnabled: z.boolean().optional(),
     dhcpGuarding: z.unknown().optional(),
-    // get-by-id only (absent in list view); nested shape left loose.
+    // get-by-id only (absent in list view); nested shapes left loose.
     ipv4Configuration: z.unknown().optional(),
+    ipv6Configuration: z.unknown().optional(),
     metadata: Metadata.optional(),
   })
   .passthrough();
@@ -281,6 +282,9 @@ const AclRule = z
     sourceFilter: z.unknown().optional(),
     destinationFilter: z.unknown().optional(),
     enforcingDeviceFilter: z.unknown().optional(),
+    // Read-only in the response. Deprecated as a *request* field — ordering
+    // is set via the dedicated reorder endpoint, so no write tool accepts it.
+    index: z.number().int().optional(),
     metadata: Metadata.optional(),
   })
   .passthrough();
@@ -295,6 +299,12 @@ const SwitchStack = z
   .object({
     id: z.string(),
     name: z.string().optional(),
+    // The stack's primary device. Added in 10.6.106.
+    deviceId: z.string().optional(),
+    // Renamed from `members` in 10.6.106 (was `members` through 10.4.57).
+    // `members` stays declared so responses from older consoles still
+    // describe themselves; both are optional, so either shape validates.
+    units: z.array(z.unknown()).optional(),
     members: z.array(z.unknown()).optional(),
     lags: z.array(z.unknown()).optional(),
     metadata: Metadata.optional(),
@@ -351,7 +361,7 @@ const TrafficMatchingList = z
   })
   .passthrough();
 
-// Verified against the live Integration API (10.5.43). The WAN and
+// Verified against the live Integration API (10.6.106). The WAN and
 // site-to-site-tunnel list rows are intentionally minimal in the API.
 const Wan = z
   .object({
