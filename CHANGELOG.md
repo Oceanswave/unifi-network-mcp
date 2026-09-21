@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.13.1](https://github.com/owine/unifi-network-mcp/compare/2.13.0...2.13.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* pin Trivy to v0.74.0 so the security scan reads pnpm v12 lockfiles ([#247](https://github.com/owine/unifi-network-mcp/issues/247)) ([33abea7](https://github.com/owine/unifi-network-mcp/commit/33abea7855097d567c3c4d012225f337bcf2aaff))
+
+
+### Dependencies
+
+* update all non-major dependencies ([#252](https://github.com/owine/unifi-network-mcp/issues/252)) ([6a12532](https://github.com/owine/unifi-network-mcp/commit/6a12532ed1801ba66bc11d6aebe5f14ea557ace8))
+* update pnpm to v12.4.2 ([#253](https://github.com/owine/unifi-network-mcp/issues/253)) ([bce6801](https://github.com/owine/unifi-network-mcp/commit/bce68014c14bf671ad2da69336cc8cda01174f7c))
+* update testing to v5.0.1 ([#254](https://github.com/owine/unifi-network-mcp/issues/254)) ([707144f](https://github.com/owine/unifi-network-mcp/commit/707144f321612e7c1bb758143a6fb83f1a616d44))
+
 ## [2.13.0](https://github.com/owine/unifi-network-mcp/compare/2.12.0...2.13.0) (2026-09-14)
 
 
