@@ -45,9 +45,9 @@ describe("NetworkClient", () => {
     it("should build the correct base URL from host", async () => {
       fetchMock.mockResolvedValue(mockResponse("{}"));
       const client = new NetworkClient(makeConfig({ host: "10.0.0.1" }));
-      await client.get("/test");
+      await client.get("/sites");
       expect(fetchMock).toHaveBeenCalledWith(
-        "https://10.0.0.1/proxy/network/integration/v1/test",
+        "https://10.0.0.1/proxy/network/integration/v1/sites",
         expect.any(Object)
       );
     });
@@ -55,7 +55,7 @@ describe("NetworkClient", () => {
     it("should set X-API-KEY header from config", async () => {
       fetchMock.mockResolvedValue(mockResponse("{}"));
       const client = new NetworkClient(makeConfig({ apiKey: "my-secret" }));
-      await client.get("/test");
+      await client.get("/sites");
       const [, options] = fetchMock.mock.calls[0];
       expect(options.headers["X-API-KEY"]).toBe("my-secret");
     });
@@ -82,7 +82,7 @@ describe("NetworkClient", () => {
 
     it("post() should call fetch with POST and JSON body", async () => {
       fetchMock.mockResolvedValue(mockResponse("{}"));
-      await client.post("/sites", { name: "test" });
+      await client.post("/sites/s1/networks", { name: "test" });
       const [, options] = fetchMock.mock.calls[0];
       expect(options.method).toBe("POST");
       expect(options.body).toBe(JSON.stringify({ name: "test" }));
@@ -90,7 +90,7 @@ describe("NetworkClient", () => {
 
     it("put() should call fetch with PUT and JSON body", async () => {
       fetchMock.mockResolvedValue(mockResponse("{}"));
-      await client.put("/sites/1", { name: "updated" });
+      await client.put("/sites/s1/networks/n1", { name: "updated" });
       const [, options] = fetchMock.mock.calls[0];
       expect(options.method).toBe("PUT");
       expect(options.body).toBe(JSON.stringify({ name: "updated" }));
@@ -98,7 +98,7 @@ describe("NetworkClient", () => {
 
     it("patch() should call fetch with PATCH and JSON body", async () => {
       fetchMock.mockResolvedValue(mockResponse("{}"));
-      await client.patch("/sites/1", { name: "patched" });
+      await client.patch("/sites/s1/firewall/policies/p1", { name: "patched" });
       const [, options] = fetchMock.mock.calls[0];
       expect(options.method).toBe("PATCH");
       expect(options.body).toBe(JSON.stringify({ name: "patched" }));
@@ -106,7 +106,7 @@ describe("NetworkClient", () => {
 
     it("delete() should call fetch with DELETE and no body", async () => {
       fetchMock.mockResolvedValue(mockResponse("{}"));
-      await client.delete("/sites/1");
+      await client.delete("/sites/s1/networks/n1");
       const [, options] = fetchMock.mock.calls[0];
       expect(options.method).toBe("DELETE");
       expect(options.body).toBeUndefined();
@@ -126,7 +126,7 @@ describe("NetworkClient", () => {
       fetchMock.mockResolvedValue(
         mockResponse(JSON.stringify({ data: [1, 2, 3] }))
       );
-      const result = await client.get("/test");
+      const result = await client.get("/sites");
       expect(result).toEqual({ data: [1, 2, 3] });
     });
 
@@ -134,7 +134,7 @@ describe("NetworkClient", () => {
       fetchMock.mockResolvedValue(
         mockResponse("plain text", { contentType: "text/plain" })
       );
-      const result = await client.get("/test");
+      const result = await client.get("/sites");
       expect(result).toBe("plain text");
     });
 
@@ -142,7 +142,7 @@ describe("NetworkClient", () => {
       fetchMock.mockResolvedValue(
         mockResponse("Not Found", { ok: false, status: 404 })
       );
-      await expect(client.get("/missing")).rejects.toThrow(
+      await expect(client.get("/sites/s1/devices/missing")).rejects.toThrow(
         "HTTP 404: Not Found"
       );
     });
@@ -159,53 +159,53 @@ describe("NetworkClient", () => {
 
     it("propagates fetch TypeError for get()", async () => {
       fetchMock.mockRejectedValue(new TypeError("fetch failed"));
-      await expect(client.get("/test")).rejects.toThrow("fetch failed");
+      await expect(client.get("/sites")).rejects.toThrow("fetch failed");
     });
 
     it("propagates fetch TypeError for post()", async () => {
       fetchMock.mockRejectedValue(new TypeError("fetch failed"));
-      await expect(client.post("/test", {})).rejects.toThrow("fetch failed");
+      await expect(client.post("/sites/s1/networks", {})).rejects.toThrow("fetch failed");
     });
 
     it("propagates fetch TypeError for put()", async () => {
       fetchMock.mockRejectedValue(new TypeError("fetch failed"));
-      await expect(client.put("/test", {})).rejects.toThrow("fetch failed");
+      await expect(client.put("/sites/s1/networks/n1", {})).rejects.toThrow("fetch failed");
     });
 
     it("propagates fetch TypeError for patch()", async () => {
       fetchMock.mockRejectedValue(new TypeError("fetch failed"));
-      await expect(client.patch("/test", {})).rejects.toThrow("fetch failed");
+      await expect(client.patch("/sites/s1/firewall/policies/p1", {})).rejects.toThrow("fetch failed");
     });
 
     it("propagates fetch TypeError for delete()", async () => {
       fetchMock.mockRejectedValue(new TypeError("fetch failed"));
-      await expect(client.delete("/test")).rejects.toThrow("fetch failed");
+      await expect(client.delete("/sites/s1/networks/n1")).rejects.toThrow("fetch failed");
     });
 
     it("refuses redirects so the API key is never re-sent elsewhere", async () => {
       fetchMock.mockResolvedValue(mockResponse("{}"));
-      await client.get("/test");
+      await client.get("/sites");
       const [, options] = fetchMock.mock.calls[0];
       expect(options.redirect).toBe("error");
     });
 
     it("bounds every request with a timeout signal", async () => {
       fetchMock.mockResolvedValue(mockResponse("{}"));
-      await client.post("/test", {});
+      await client.post("/sites/s1/networks", {});
       const [, options] = fetchMock.mock.calls[0];
       expect(options.signal).toBeInstanceOf(AbortSignal);
     });
 
     it("tells a timed-out read to retry, since nothing can have changed", async () => {
       fetchMock.mockRejectedValue(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
-      const err = await client.get("/test").catch((e: unknown) => e);
+      const err = await client.get("/sites").catch((e: unknown) => e);
       expect((err as Error).message).toMatch(/did not respond within 30s\. Retry/);
       expect((err as Error).message).not.toContain("may still have been applied");
     });
 
     it("reports a timeout as an unknown outcome rather than a failure", async () => {
       fetchMock.mockRejectedValue(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
-      await expect(client.post("/test", {})).rejects.toThrow(/did not respond within 30s.*may still have been applied/);
+      await expect(client.post("/sites/s1/networks", {})).rejects.toThrow(/did not respond within 30s.*may still have been applied/);
     });
   });
 
@@ -222,9 +222,9 @@ describe("NetworkClient", () => {
       fetchMock.mockResolvedValue(mockResponse(JSON.stringify({
         statusCode: 400, statusName: "UNAUTHORIZED", code: "api.authentication.missing-credentials",
         message: "Missing credentials", timestamp: "2024-11-27T08:13:46.966Z",
-        requestPath: "/integration/v1/sites/123", requestId: "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        requestPath: "/integration/v1/sites/123/devices", requestId: "3fa85f64-5717-4562-b3fc-2c963f66afa6",
       }), { ok: false, status: 400 }));
-      await expect(client.get("/sites/123")).rejects.toThrow(
+      await expect(client.get("/sites/123/devices")).rejects.toThrow(
         /^HTTP 400: Missing credentials \(api\.authentication\.missing-credentials; request 3fa85f64-5717-4562-b3fc-2c963f66afa6\)$/
       );
     });
@@ -258,7 +258,7 @@ describe("NetworkClient", () => {
       const timer = new AbortController();
       vi.spyOn(AbortSignal, "timeout").mockReturnValue(timer.signal);
       fetchMock.mockImplementation(hang);
-      const pending = withCallSignal(new AbortController().signal, () => new NetworkClient(makeConfig()).put("/sites/s/x", {}));
+      const pending = withCallSignal(new AbortController().signal, () => new NetworkClient(makeConfig()).put("/sites/s/networks/x", {}));
       timer.abort(new DOMException("timed out", "TimeoutError"));
       await expect(pending).rejects.toThrow(/did not respond within 30s/);
     });
@@ -283,6 +283,8 @@ describe("NetworkClient", () => {
       fetchMock.mockResolvedValue(mockResponse("{}"));
     });
 
+    // The cases here are the client's view; tests/guard.test.ts covers the
+    // guard itself.
     it.each([
       ["dot-segments", "/sites/../../../api/s/default/cmd/sitemgr"],
       ["encoded dot-segments", "/sites/s/devices/%2e%2e/%2e%2e/networks/n"],
@@ -290,14 +292,14 @@ describe("NetworkClient", () => {
       ["a fragment", "/sites/s/firewall/policies/x#/ignored"],
       ["an empty segment", "/sites//devices"],
     ])("rejects a path containing %s without sending it", async (_label, path) => {
-      await expect(client.post(path, {})).rejects.toThrow(/outside the Integration API/);
+      await expect(client.post(path, {})).rejects.toThrow(/request guard/);
       expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it("allows ordinary resource paths with an encoded query", async () => {
-      await client.get("/sites/abc-123/devices/d_1/interfaces/ports/3/actions?offset=0&filter=name.eq%28%27a%27%29");
+      await client.get("/sites/abc-123/devices?offset=0&filter=name.eq%28%27a%27%29");
       expect(fetchMock).toHaveBeenCalledWith(
-        "https://192.168.1.1/proxy/network/integration/v1/sites/abc-123/devices/d_1/interfaces/ports/3/actions?offset=0&filter=name.eq%28%27a%27%29",
+        "https://192.168.1.1/proxy/network/integration/v1/sites/abc-123/devices?offset=0&filter=name.eq%28%27a%27%29",
         expect.any(Object)
       );
     });

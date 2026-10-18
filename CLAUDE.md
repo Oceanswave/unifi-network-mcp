@@ -52,6 +52,7 @@ src/
   config.ts           # Loads and validates env vars with Zod
   tls.ts              # consoleDispatcher() — per-client TLS (CA pinning, verify off) and keep-alive
   client.ts           # NetworkClient — HTTP wrapper for the Network API
+  guard.ts            # guardRequest() — method + path allowlist every request passes before fetch
   instructions.ts     # serverInstructions() — cross-tool guidance sent to MCP hosts
   tools/              # Tool handlers, one file per API domain
     index.ts          # registerAllTools() — wires all tool modules
@@ -88,8 +89,9 @@ src/
 5. For write tools: register them after `if (readOnly) return;` at the function level, add optional `dryRun` parameter
 6. If the endpoint is a full-replacement PUT, GET the current resource and build the body with `mergeForPut()` from `utils/full-put.ts`, using the field allowlist from the docs' request schema (per variant, if the body is discriminated). Never send a sparse body to a full PUT. Wrap the GET-merge-PUT in `withResourceLock(path, …)`, and any PATCH of the same resource under the same `path`, so parallel calls cannot revert each other; add a case to `tests/tools/merge-concurrency.test.ts`
 7. For dangerous/destructive tools: add `confirm: confirmDestructive()` validated via `const guard = dryRun ? null : requireConfirmation(...)`, prefix description with `DESTRUCTIVE:`. A non-destructive write whose particular inputs open access (an ALLOW rule, an open SSID, a large voucher batch) takes an optional `confirm` checked with `requireConfirmationIf(reason, confirm, dryRun)` instead, and gets a case in `tests/tools/security-confirm.test.ts`
-8. Wire it into `src/tools/index.ts` via `registerAllTools()`
-9. Add tests in `tests/tools/<domain>.test.ts` using `createMockServer()` and `createMockClient()` from `tests/tools/_helpers.ts`
+8. Add every request the tool sends to `ROUTES` in `src/guard.ts` (a write route names the tools that send it). `NetworkClient` refuses anything not listed, and `tests/guard.test.ts` calls every tool through it, so a missing entry fails CI
+9. Wire it into `src/tools/index.ts` via `registerAllTools()`
+10. Add tests in `tests/tools/<domain>.test.ts` using `createMockServer()` and `createMockClient()` from `tests/tools/_helpers.ts`
 
 ## Tool safety
 
@@ -106,7 +108,7 @@ All tool files follow a consistent pattern:
 
 Tests mock `NetworkClient` methods and capture tool handlers via `createMockServer()`, which returns `handlers` (name -> handler) and `configs` (name -> { description, annotations, schema, outputSchema }); `get()` on either throws for an unknown tool. Use `mockFn(client, "get")` for type-safe access to mock functions. Each tool gets a success and error test at minimum, plus annotation checks, read-only mode tests, and dry-run/confirm tests where applicable.
 
-Cross-cutting suites check every tool at once: `tests/tools/safety-compliance.test.ts` (annotations, dryRun/confirm, `DESTRUCTIVE:` prefix, read-only behaviour), `tests/tools/validation.test.ts` (input rejection, ID charset), `tests/tools/security-confirm.test.ts` (conditional confirm), `tests/tools/merge-concurrency.test.ts` (read-merge-write locking), `tests/sdk-contract.test.ts` (results through the real SDK) and `tests/docs-drift.test.ts` (README and CLAUDE.md against the code, with no stale-prone counts), plus `tests/tls.test.ts`, `tests/instructions.test.ts` and `tests/client-history-transport.test.ts`. When one fails, fix the tool or the docs, not the check.
+Cross-cutting suites check every tool at once: `tests/tools/safety-compliance.test.ts` (annotations, dryRun/confirm, `DESTRUCTIVE:` prefix, read-only behaviour), `tests/tools/validation.test.ts` (input rejection, ID charset), `tests/tools/security-confirm.test.ts` (conditional confirm), `tests/tools/merge-concurrency.test.ts` (read-merge-write locking), `tests/guard.test.ts` (every tool's requests against the allowlist, plus refusals), `tests/sdk-contract.test.ts` (results through the real SDK) and `tests/docs-drift.test.ts` (README and CLAUDE.md against the code, with no stale-prone counts), plus `tests/tls.test.ts`, `tests/instructions.test.ts` and `tests/client-history-transport.test.ts`. When one fails, fix the tool or the docs, not the check.
 
 ## Code style
 
