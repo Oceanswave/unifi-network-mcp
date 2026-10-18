@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 // older undici whose handlers the Agent from tls.ts (undici 8) rejects.
 import { fetch, type Agent, type RequestInit, type Response } from "undici";
 import { Config } from "./config.js";
+import { guardRequest, type GuardPolicy } from "./guard.js";
 import { consoleDispatcher } from "./tls.js";
 
 // Well under undici's 300s default, so a stalled controller fails the call
@@ -55,10 +56,10 @@ function requestSignal(timeoutMs: number): AbortSignal {
 }
 
 export class NetworkClient {
-  private baseUrl: string;
   private headers: Record<string, string>;
   private networkUrl: string;
   private dispatcher: Agent;
+  private policy: GuardPolicy;
 
   constructor(config: Config) {
     // Cloud Connector only exists behind api.ui.com. A console ID set against a
@@ -72,21 +73,28 @@ export class NetworkClient {
     }
     const consolePath = useConnector ? `/v1/connector/consoles/${config.consoleId}` : "";
     this.networkUrl = `https://${config.host}${consolePath}/proxy/network`;
-    this.baseUrl = `${this.networkUrl}/integration/v1`;
     this.headers = {
       "X-API-KEY": config.apiKey,
       "Content-Type": "application/json",
     };
 
     this.dispatcher = consoleDispatcher(config);
+    this.policy = { readOnly: config.readOnly };
   }
 
+  /**
+   * path is relative to the Integration API, as the tools pass it. The guard
+   * sees it as the canonical path under the Network application; the host and
+   * any Cloud Connector prefix are added only once it has passed.
+   */
   private async request(
     method: string,
     path: string,
     body?: unknown
   ): Promise<unknown> {
-    const url = this.resolve(path);
+    const canonical = `/integration/v1${path}`;
+    guardRequest(method, canonical, this.policy);
+    const url = `${this.networkUrl}${canonical}`;
     const options: RequestInit = {
       method,
       headers: this.headers,
@@ -121,22 +129,6 @@ export class NetworkClient {
       return response.json();
     }
     return response.text();
-  }
-
-  /**
-   * Path segments come from model-supplied IDs. URL parsing folds `..`
-   * (and `%2e%2e`, and `\`) out of the path and `#` truncates it, which would
-   * let an ID reach any endpoint on the console — legacy controller API
-   * included — with this API key. Every tool path is plain word segments, so
-   * allow only those; the query string is built by URLSearchParams.
-   */
-  private resolve(path: string): string {
-    const queryStart = path.indexOf("?");
-    const pathname = queryStart === -1 ? path : path.slice(0, queryStart);
-    if (!/^(\/[A-Za-z0-9_-]+)+$/.test(pathname) || path.includes("#")) {
-      throw new Error(`Refusing a request path outside the Integration API: ${pathname}`);
-    }
-    return `${this.baseUrl}${path}`;
   }
 
   async get(path: string): Promise<unknown> {
@@ -191,8 +183,10 @@ export class NetworkClient {
   }
 
   private async historyRequest(path: string, body?: unknown): Promise<unknown> {
+    const method = body === undefined ? "GET" : "POST";
+    guardRequest(method, path, this.policy);
     const options: RequestInit = {
-      method: body === undefined ? "GET" : "POST", headers: this.headers,
+      method, headers: this.headers,
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       redirect: "error", signal: requestSignal(25000), dispatcher: this.dispatcher,
     };
