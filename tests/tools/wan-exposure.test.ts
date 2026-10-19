@@ -276,6 +276,57 @@ describe("WAN-exposure refusals", () => {
     });
   });
 
+  describe("zone IDs in another case", () => {
+    const wanId = "00000000-0000-4000-8000-0000000000aa";
+    const lanId = "00000000-0000-4000-8000-0000000000bb";
+    const zones = [
+      { id: wanId, name: "External", networkIds: [], metadata: { origin: "SYSTEM_DEFINED" } },
+      { id: lanId.toUpperCase(), name: "Internal", networkIds: [], metadata: { origin: "SYSTEM_DEFINED" } },
+    ];
+
+    it("finds the WAN zone from an upper-case source zoneId", async () => {
+      answer(client, { zones });
+      const result = await call("unifi_create_firewall_policy", { siteId: "s1", policy: policy("ALLOW", wanId.toUpperCase()), confirm: true });
+      expectRefused(result, /ALLOW traffic from the External zone, which is the WAN/);
+    });
+
+    it("finds a zone the controller lists in upper case", async () => {
+      answer(client, { zones });
+      const result = await call("unifi_create_firewall_policy", { siteId: "s1", policy: policy("ALLOW", lanId), confirm: true });
+      expect(result.isError).toBeUndefined();
+    });
+
+    it("refuses an upper-case zone ID listed in UNIFI_NETWORK_WAN_ZONE_IDS", async () => {
+      ({ client, call } = setup({ allowExposure: false, zoneIds: [lanId] }));
+      answer(client, { zones });
+      expectRefused(await call("unifi_update_firewall_zone", { siteId: "s1", firewallZoneId: lanId.toUpperCase(), name: "Internal", networkIds: [] }), /WAN/);
+    });
+
+    it("refuses moving a network into, or out of, the WAN zone named in another case", async () => {
+      const network = { ...gatewayNetwork, zoneId: lanId };
+      answer(client, { zones, resources: { "/sites/s1/networks/n1": network } });
+      expectRefused(await call("unifi_update_network", { siteId: "s1", networkId: "n1", zoneId: wanId.toUpperCase() }), /put the network in the External zone/);
+      answer(client, { zones, resources: { "/sites/s1/networks/n1": { ...network, zoneId: wanId.toUpperCase() } } });
+      expectRefused(await call("unifi_update_network", { siteId: "s1", networkId: "n1", zoneId: lanId }), /out of the External zone/);
+      expect(writes(client)).toEqual([]);
+    });
+
+    it("does not read the zones for a network update that only changes the zoneId's case", async () => {
+      answer(client, { zones, resources: { "/sites/s1/networks/n1": { ...gatewayNetwork, zoneId: wanId } } });
+      expect((await call("unifi_update_network", { siteId: "s1", networkId: "n1", zoneId: wanId.toUpperCase() })).isError).toBeUndefined();
+      expect(mockFn(client, "get")).toHaveBeenCalledTimes(1);
+    });
+
+    it("matches an upper-case source zone of a policy that uses a traffic matching list", async () => {
+      const using = (source: string) => policy("ALLOW", source, { name: "Web in", destination: { zoneId: lanId, trafficFilter: { trafficMatchingListId: "list1" } } });
+      const update = { siteId: "s1", trafficMatchingListId: "list1", type: "PORTS", name: "Web", items: [{ type: "PORT_NUMBER", value: 22 }] };
+      answer(client, { zones, policies: [using(lanId)] });
+      expect((await call("unifi_update_traffic_matching_list", update)).isError).toBeUndefined();
+      answer(client, { zones, policies: [using(wanId.toUpperCase())] });
+      expectRefused(await call("unifi_update_traffic_matching_list", update), /Web in/);
+    });
+  });
+
   describe("firewall zones", () => {
     it("refuses changing the External zone", async () => {
       const result = await call("unifi_update_firewall_zone", { siteId: "s1", firewallZoneId: "zone-external", name: "External", networkIds: ["net-wan", "net-lan"] });

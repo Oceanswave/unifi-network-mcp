@@ -141,7 +141,7 @@ export class WanExposure {
         // IDs are compared without case: the controller may not care about it.
         if (!allowsTraffic(policy) || !JSON.stringify(policy).toLowerCase().includes(JSON.stringify(listId.toLowerCase()))) return false;
         // A source zone that is not on the list could be the WAN: count it.
-        const zone = zones.find((candidate) => candidate.id === sourceZoneId(policy));
+        const zone = zones.find((candidate) => sameId(candidate.id, sourceZoneId(policy)));
         return zone === undefined || this.isWan(zone);
       });
       if (user) {
@@ -156,7 +156,7 @@ export class WanExposure {
   }
 
   private async zone(zoneId: string, what: string): Promise<Zone> {
-    const zone = (await this.zoneList()).find((candidate) => candidate.id === zoneId);
+    const zone = (await this.zoneList()).find((candidate) => sameId(candidate.id, zoneId));
     if (zone === undefined) throw new Refusal(`${what} (${zoneId}) is not one of this site's firewall zones, so it cannot be checked against the WAN zone`);
     return zone;
   }
@@ -190,6 +190,11 @@ function sourceZoneId(policy: Record<string, unknown>): string | undefined {
   const source = policy.source;
   const zoneId = source !== null && typeof source === "object" && "zoneId" in source ? source.zoneId : undefined;
   return typeof zoneId === "string" ? zoneId : undefined;
+}
+
+/** IDs are compared without case: the controller may not care about it. */
+function sameId(a: string, b: string | undefined): boolean {
+  return a.toLowerCase() === b?.toLowerCase();
 }
 
 function label(zone: Zone): string {

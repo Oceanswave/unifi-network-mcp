@@ -292,8 +292,9 @@ export function registerNetworkTools(
           const { allowed } = fieldsForManagement(updates.management ?? current.management);
           const body = mergeForPut(current, updates, allowed);
           checkNetworkBody(body, updates);
-          if (typeof body.zoneId === "string" && body.zoneId !== current.zoneId) {
-            const currentZoneId = typeof current.zoneId === "string" ? current.zoneId : undefined;
+          const currentZoneId = typeof current.zoneId === "string" ? current.zoneId : undefined;
+          // Zone IDs are compared without case, as the WAN check compares them.
+          if (typeof body.zoneId === "string" && body.zoneId.toLowerCase() !== currentZoneId?.toLowerCase()) {
             const exposure = await new WanExposure(client, wan, siteId).networkZone(body.zoneId, currentZoneId);
             if (exposure) return wanRefusal(exposure, "PUT", path);
           }
