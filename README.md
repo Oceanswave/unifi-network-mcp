@@ -76,7 +76,7 @@ claude mcp add-json unifi-network '{"command":"node","args":["/path/to/unifi-net
 | `UNIFI_NETWORK_WRITE_TOOLS` | No | all write tools | Comma-separated write tool names and/or groups (`devices`, `clients`, `networks`, `wifi`, `hotspot`, `firewall`, `acl`, `dns-policies`, `traffic-matching`) to load; `none` or empty loads none. Unknown names stop the server. Ignored, with a warning, while read-only (see [Limiting write mode](#limiting-write-mode)) |
 | `UNIFI_NETWORK_ALLOW_WAN_EXPOSURE` | No | `false` | Set to `true` to stop refusing writes that could let traffic in from the WAN; they then only need `confirm: true` |
 | `UNIFI_NETWORK_WAN_ZONE_IDS` | No | — | Comma-separated firewall zone IDs (UUIDs) to treat as the WAN, in addition to the system-defined zone named `External`. Recommended when writes are on |
-| `UNIFI_NETWORK_WRITE_LOG` | No | — | Absolute path of a JSON Lines file that every write tool call is appended to. Created `0600` (parent directories `0700`); the server will not start if it is a symlink or writable by others |
+| `UNIFI_NETWORK_WRITE_LOG` | No | — | Absolute path of a JSON Lines file that every write tool call is appended to. Created `0600` (parent directories `0700`); the server will not start if it is a symlink or writable by others. Ignored, with a warning, while read-only |
 
 UniFi consoles ship with a self-signed certificate, so against a local console the first call usually fails with a certificate error. The safe fix is to trust that one certificate: save it and point `UNIFI_NETWORK_CA_CERT` at the file.
 

@@ -118,5 +118,10 @@ export function loadConfig(): Config {
     console.error("Ignoring UNIFI_NETWORK_WRITE_TOOLS: the server is read-only, so no write tools load. Set UNIFI_NETWORK_READ_ONLY=false to use it.");
     delete config.writeTools;
   }
+  if (config.readOnly && config.writeLog !== undefined) {
+    // Nothing would be logged, and opening the file could stop the server.
+    console.error("Ignoring UNIFI_NETWORK_WRITE_LOG: the server is read-only, so there are no write calls to log. Set UNIFI_NETWORK_READ_ONLY=false to use it.");
+    delete config.writeLog;
+  }
   return config;
 }
