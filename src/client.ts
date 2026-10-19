@@ -79,7 +79,7 @@ export class NetworkClient {
     };
 
     this.dispatcher = consoleDispatcher(config);
-    this.policy = { readOnly: config.readOnly };
+    this.policy = { readOnly: config.readOnly, ...(config.writeTools ? { writeTools: config.writeTools } : {}) };
   }
 
   /**

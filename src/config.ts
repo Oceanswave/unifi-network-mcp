@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { pemCertificates } from "./tls.js";
+import { WRITE_TOOL_GROUPS, WRITE_TOOLS, parseWriteTools } from "./write-tools.js";
 
 function holdsCertificate(pem: string): boolean {
   try {
@@ -26,6 +27,20 @@ const configSchema = z.object({
     .boolean()
     .default(true)
     .describe("When true, only read-only tools are registered"),
+  writeTools: z.string()
+    .transform((value, ctx) => {
+      const { tools, unknown } = parseWriteTools(value);
+      if (unknown.length > 0) {
+        ctx.addIssue({
+          code: "custom",
+          message: `UNIFI_NETWORK_WRITE_TOOLS names unknown write tools or groups: ${unknown.join(", ")}. Groups: ${Object.keys(WRITE_TOOL_GROUPS).join(", ")}. Tools: ${WRITE_TOOLS.join(", ")}. Use "none" for no write tools.`,
+        });
+        return z.NEVER;
+      }
+      return tools;
+    })
+    .optional()
+    .describe("The write tools to register; undefined registers them all"),
   caCert: z.string()
     .refine(holdsCertificate, "UNIFI_NETWORK_CA_CERT must name a PEM file containing a certificate")
     .optional()
@@ -65,12 +80,20 @@ export function loadConfig(): Config {
     readOnly:
       process.env.UNIFI_NETWORK_READ_ONLY?.toLowerCase() !== "false",
     ...(caCert !== undefined ? { caCert } : {}),
+    ...(process.env.UNIFI_NETWORK_WRITE_TOOLS !== undefined
+      ? { writeTools: process.env.UNIFI_NETWORK_WRITE_TOOLS } : {}),
   });
 
   if (!result.success) {
     console.error(`Configuration error:\n${z.prettifyError(result.error)}`);
-    process.exit(1);
+    return process.exit(1);
   }
 
-  return result.data;
+  const config = result.data;
+  if (config.readOnly && config.writeTools !== undefined) {
+    // Still validated above, so a typo shows up before writes are turned on.
+    console.error("Ignoring UNIFI_NETWORK_WRITE_TOOLS: the server is read-only, so no write tools load. Set UNIFI_NETWORK_READ_ONLY=false to use it.");
+    delete config.writeTools;
+  }
+  return config;
 }

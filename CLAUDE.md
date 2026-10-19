@@ -54,6 +54,7 @@ src/
   client.ts           # NetworkClient — HTTP wrapper for the Network API
   guard.ts            # guardRequest() — method + path allowlist every request passes before fetch
   instructions.ts     # serverInstructions() — cross-tool guidance sent to MCP hosts
+  write-tools.ts      # WRITE_TOOL_GROUPS — every write tool by module; parses UNIFI_NETWORK_WRITE_TOOLS
   tools/              # Tool handlers, one file per API domain
     index.ts          # registerAllTools() — wires all tool modules
     system.ts         # System info
@@ -86,7 +87,7 @@ src/
 2. Use `server.registerTool(name, { description, inputSchema, outputSchema, annotations }, handler)`. Titles are derived from the name by `toolTitle()` in `src/tools/index.ts`; add an acronym to `TITLE_WORDS` if it reads wrongly
 3. Set appropriate annotations from `utils/safety.ts`: `READ_ONLY`, `WRITE`, `WRITE_NOT_IDEMPOTENT`, `DESTRUCTIVE`
 4. Add an `outputSchema` from `utils/output-schemas.ts` and return `formatSuccess(data, { structured: true })`. Every read tool has one; write tools get one when the API response returns the affected resource, wrapped in `writeResult()` so the dry-run preview also validates (`tests/sdk-contract.test.ts` enforces this through the real SDK). Follow the loose strategy in that file: non-key fields optional, nested objects `.loose()`. Pass the raw shape; `registerAllTools()` publishes it as a loose object so fields the schema does not list pass SDK client validation
-5. For write tools: register them after `if (readOnly) return;` at the function level, add optional `dryRun` parameter
+5. For write tools: register them after `if (readOnly) return;` at the function level, add optional `dryRun` parameter, and add the name to its module's group in `WRITE_TOOL_GROUPS` (`src/write-tools.ts`); registration throws for a write tool missing there
 6. If the endpoint is a full-replacement PUT, GET the current resource and build the body with `mergeForPut()` from `utils/full-put.ts`, using the field allowlist from the docs' request schema (per variant, if the body is discriminated). Never send a sparse body to a full PUT. Wrap the GET-merge-PUT in `withResourceLock(path, …)`, and any PATCH of the same resource under the same `path`, so parallel calls cannot revert each other; add a case to `tests/tools/merge-concurrency.test.ts`
 7. For dangerous/destructive tools: add `confirm: confirmDestructive()` validated via `const guard = dryRun ? null : requireConfirmation(...)`, prefix description with `DESTRUCTIVE:`. A non-destructive write whose particular inputs open access (an ALLOW rule, an open SSID, a large voucher batch) takes an optional `confirm` checked with `requireConfirmationIf(reason, confirm, dryRun)` instead, and gets a case in `tests/tools/security-confirm.test.ts`
 8. Add every request the tool sends to `ROUTES` in `src/guard.ts` (a write route names the tools that send it). `NetworkClient` refuses anything not listed, and `tests/guard.test.ts` calls every tool through it, so a missing entry fails CI

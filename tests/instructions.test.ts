@@ -19,3 +19,22 @@ describe("serverInstructions", () => {
     expect(text).not.toMatch(/read-only/i);
   });
 });
+
+describe("serverInstructions with UNIFI_NETWORK_WRITE_TOOLS", () => {
+  it("names the enabled write tools", () => {
+    const text = serverInstructions(false, { writeTools: ["unifi_update_wifi", "unifi_create_voucher"] });
+    expect(text).toContain("only these write tools: unifi_update_wifi, unifi_create_voucher");
+    expect(text).toContain("dryRun");
+  });
+
+  it("says nothing can change when no write tools are enabled", () => {
+    const text = serverInstructions(false, { writeTools: [] });
+    expect(text).toContain("No write tools are enabled");
+    expect(text).not.toContain("dryRun");
+  });
+
+  it("is unchanged when the variable is unset", () => {
+    expect(serverInstructions(false, {})).toBe(serverInstructions(false));
+    expect(serverInstructions(false)).not.toContain("only these write tools");
+  });
+});
