@@ -55,13 +55,27 @@ export function noteRefusal(reason: RefusalReason, method?: string, path?: strin
   if (call && !call.refusal) call.refusal = { reason, method, ...(path === undefined ? {} : { path: withoutQuery(path) }) };
 }
 
-const SECRET_KEY = /passphrase|password|secret|key|token/i;
+/**
+ * Field names, compared without case, whose value is redacted whatever it
+ * is. Names are matched exactly, not by substring, so containers such as
+ * presharedKeys keep their network IDs (redactSecrets masks the passphrase
+ * in each entry) and fields like keyId stay readable. The list: the names
+ * redactSecrets knows from WiFi and RADIUS bodies, their legacy-API x_
+ * forms, and the usual names of credentials and key material a firewall
+ * policy record (or a mistaken argument) could carry.
+ */
+const SECRET_FIELDS = new Set([
+  "passphrase", "password", "secret", "sharedSecret", "radiusSecret",
+  "x_passphrase", "x_password", "x_secret", "x_shared_secret",
+  "apiKey", "api_key", "apiToken", "token", "accessToken", "refreshToken", "authToken",
+  "privateKey", "private_key", "presharedKey",
+].map((name) => name.toLowerCase()));
 
 function redactArgs(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redactArgs);
   if (value === null || typeof value !== "object") return value;
   return Object.fromEntries(
-    Object.entries(value).map(([key, entry]) => [key, SECRET_KEY.test(key) ? REDACTED : redactArgs(entry)])
+    Object.entries(value).map(([key, entry]) => [key, SECRET_FIELDS.has(key.toLowerCase()) ? REDACTED : redactArgs(entry)])
   );
 }
 

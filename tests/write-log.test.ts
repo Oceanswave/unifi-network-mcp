@@ -146,10 +146,13 @@ describe("write log", () => {
     expect(entries()[0]).toMatchObject({ outcome: "error", method: null, path: null });
   });
 
-  it("redacts secrets and anything keyed like one", async () => {
+  it("redacts secrets by their exact field names", async () => {
     await call("unifi_create_firewall_policy", {
       siteId: "s1",
-      policy: { name: "Block", action: { type: "BLOCK" }, apiToken: "test-token-fixture", nested: { password: "test-password-fixture", privateKey: { pem: "x" } }, secret: 42 },
+      policy: {
+        name: "Block", action: { type: "BLOCK" }, apiToken: "test-token-fixture", nested: { password: "test-password-fixture", privateKey: { pem: "x" } }, secret: 42,
+        API_KEY: "test-api-key-field-fixture", Passphrase: "test-upper-passphrase-fixture",
+      },
     });
     await call("unifi_update_wifi", {
       siteId: "s1", wifiBroadcastId: "w1",
@@ -158,10 +161,47 @@ describe("write log", () => {
     const [policy, wifi] = entries();
     expect(policy.args).toEqual({
       siteId: "s1",
-      policy: { name: "Block", action: { type: "BLOCK" }, apiToken: "[REDACTED]", nested: { password: "[REDACTED]", privateKey: "[REDACTED]" }, secret: "[REDACTED]" },
+      policy: {
+        name: "Block", action: { type: "BLOCK" }, apiToken: "[REDACTED]", nested: { password: "[REDACTED]", privateKey: "[REDACTED]" }, secret: "[REDACTED]",
+        API_KEY: "[REDACTED]", Passphrase: "[REDACTED]",
+      },
     });
-    expect(wifi.args).toMatchObject({ securityConfiguration: { type: "WPA2_PERSONAL", passphrase: "[REDACTED]", presharedKeys: "[REDACTED]" } });
-    for (const secret of ["test-token-fixture", "test-password-fixture", "test-new-passphrase-fixture", "test-vlan-passphrase-fixture", "test-passphrase-fixture"]) expect(lines.join("")).not.toContain(secret);
+    expect(wifi.args).toMatchObject({ securityConfiguration: { type: "WPA2_PERSONAL", passphrase: "[REDACTED]", presharedKeys: [{ passphrase: "[REDACTED]", network: { type: "NATIVE" } }] } });
+    for (const secret of ["test-token-fixture", "test-password-fixture", "test-api-key-field-fixture", "test-upper-passphrase-fixture", "test-new-passphrase-fixture", "test-vlan-passphrase-fixture", "test-passphrase-fixture"]) {
+      expect(lines.join("")).not.toContain(secret);
+    }
+  });
+
+  it("keeps each presharedKeys entry's network, masking only its passphrase", async () => {
+    const networkId = "00000000-0000-4000-8000-0000000000aa";
+    await call("unifi_update_wifi", {
+      siteId: "s1", wifiBroadcastId: "w1",
+      securityConfiguration: {
+        type: "WPA2_PERSONAL",
+        presharedKeys: [
+          { passphrase: "test-vlan-passphrase-fixture", network: { type: "SPECIFIC", networkId, name: "Guests" } },
+          { passphrase: "test-other-passphrase-fixture", network: { type: "NATIVE" } },
+        ],
+      },
+    });
+    expect(entries()[0].args).toMatchObject({
+      securityConfiguration: {
+        presharedKeys: [
+          { passphrase: "[REDACTED]", network: { type: "SPECIFIC", networkId, name: "Guests" } },
+          { passphrase: "[REDACTED]", network: { type: "NATIVE" } },
+        ],
+      },
+    });
+    expect(lines.join("")).not.toMatch(/test-(vlan|other)-passphrase-fixture/);
+  });
+
+  it("does not redact fields that merely mention a key or a token", async () => {
+    const policy = {
+      name: "Block", action: { type: "BLOCK" }, keyId: "k1", monkey: "zone-iot", tokenBucket: { rate: 10 },
+      source: { zoneId: "zone-internal", trafficFilter: { keys: ["a", "b"] } },
+    };
+    await call("unifi_create_firewall_policy", { siteId: "s1", policy });
+    expect(entries()[0].args).toEqual({ siteId: "s1", policy });
   });
 
   it("never logs the API key, even when the model passes it as an argument", async () => {
