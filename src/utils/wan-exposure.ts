@@ -56,10 +56,12 @@ async function listAll<T extends z.ZodType>(client: NetworkClient, path: string,
   for (let pages = 0; pages < MAX_PAGES; pages++) {
     const { data, totalCount } = page.parse(await client.get(`${path}?offset=${items.length}&limit=${PAGE_LIMIT}`));
     items.push(...data);
-    // Without a totalCount, only a short page shows the list has ended.
-    if (data.length === 0 || (totalCount === undefined ? data.length < PAGE_LIMIT : items.length >= totalCount)) return items;
+    // Without a totalCount, only an empty page shows the list has ended: a
+    // controller may cap pages below PAGE_LIMIT, so a short page proves nothing.
+    if (data.length === 0 || (totalCount !== undefined && items.length >= totalCount)) return items;
   }
-  throw new Error(`more than ${MAX_PAGES * PAGE_LIMIT} entries`);
+  // A list that does not end cannot be checked, which must not pass.
+  throw new Error(`the list did not end after ${MAX_PAGES} pages`);
 }
 
 class Refusal extends Error {}
