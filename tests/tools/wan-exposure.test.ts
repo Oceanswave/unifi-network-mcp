@@ -443,14 +443,44 @@ describe("WAN-exposure refusals", () => {
       expectRefused(await call("unifi_update_traffic_matching_list", { ...update, trafficMatchingListId: "LIST1" }), /Web in/);
     });
 
+    /** A controller that sends no totalCount and at most pageSize entries per page, whatever limit asks for. */
+    function capped(policies: unknown[], pageSize: number, zones: unknown[] = ZONES) {
+      mockFn(client, "get").mockImplementation((path: string) => {
+        const offset = Number(/offset=(\d+)/.exec(path)?.[1]);
+        const list = path.includes("/firewall/zones?") ? zones : policies;
+        return Promise.resolve({ data: list.slice(offset, offset + pageSize) });
+      });
+    }
+    const policyGets = () => mockFn(client, "get").mock.calls.map(([path]) => path as string).filter((path) => path.includes("/policies?"));
+
     it("checks policies past the first page when the API leaves out totalCount", async () => {
       const filler = Array.from({ length: 200 }, () => usingList("BLOCK", "zone-external"));
-      mockFn(client, "get").mockImplementation((path: string) => {
-        if (path.includes("/firewall/zones?")) return Promise.resolve(page(ZONES));
-        const data = path.includes("offset=0&") ? filler : [usingList("ALLOW", "zone-external")];
-        return Promise.resolve({ data });
-      });
+      capped([...filler, usingList("ALLOW", "zone-external")], 200);
       expectRefused(await call("unifi_update_traffic_matching_list", update), /Web in/);
+    });
+
+    it("keeps paging when the controller caps pages below the limit and leaves out totalCount", async () => {
+      const filler = Array.from({ length: 50 }, () => usingList("BLOCK", "zone-external"));
+      capped([...filler, usingList("ALLOW", "zone-external"), ...filler], 50);
+      const result = await call("unifi_update_traffic_matching_list", update);
+      expectRefused(result, /used by firewall policy "Web in", which ALLOWs traffic from the WAN/);
+      expect(policyGets()).toEqual([0, 50, 100, 101].map((offset) => `/sites/s1/firewall/policies?offset=${offset}&limit=200`));
+      expect(writes(client)).toEqual([]);
+    });
+
+    it("finds the WAN zone past a capped first page of zones", async () => {
+      capped([], 1);
+      const result = await call("unifi_create_firewall_policy", { siteId: "s1", policy: policy("ALLOW", "zone-external"), confirm: true });
+      expectRefused(result, /ALLOW traffic from the External zone, which is the WAN/);
+    });
+
+    it("refuses when the policy list does not end", async () => {
+      mockFn(client, "get").mockImplementation((path: string) =>
+        Promise.resolve(path.includes("/firewall/zones?") ? page(ZONES) : { data: [usingList("BLOCK", "zone-external")] }));
+      const result = await call("unifi_update_traffic_matching_list", update);
+      expectRefused(result, /could not be read \(the list did not end after 50 pages\)/);
+      expect(policyGets()).toHaveLength(50);
+      expect(writes(client)).toEqual([]);
     });
 
     it("refuses when the policies cannot be read", async () => {
