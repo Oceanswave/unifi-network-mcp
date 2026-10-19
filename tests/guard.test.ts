@@ -64,6 +64,7 @@ const overrides: Record<string, Record<string, unknown>> = {
   unifi_create_dns_policy: { ipv4Address: "192.0.2.10", ttlSeconds: 60 },
   unifi_create_firewall_policy: { policy: { name: "Block", enabled: true, action: { type: "BLOCK" }, source: { zoneId: "zone-int" }, destination: { zoneId: "zone-ext" } } },
   unifi_update_firewall_zone: { firewallZoneId: "zone-int" },
+  unifi_delete_firewall_zone: { firewallZoneId: "zone-int" },
   unifi_reorder_firewall_policies: { sourceFirewallZoneId: "zone-int", destinationFirewallZoneId: "zone-ext" },
   unifi_bulk_delete_vouchers: { filter: "expired.eq(true)" },
 };
@@ -232,6 +233,19 @@ describe("request guard", () => {
       const client = new NetworkClient({ host: "api.ui.com", consoleId: "console1", apiKey: "k", verifySsl: true, readOnly: false });
       await client.get("/sites");
       expect(fetchMock.mock.calls[0][0]).toBe("https://api.ui.com/v1/connector/consoles/console1/proxy/network/integration/v1/sites");
+    });
+
+    it("lets a zone delete read the zones for its WAN check when it is the only write tool enabled", async () => {
+      const writeTools = ["unifi_delete_firewall_zone"];
+      const client = new NetworkClient({ host: "192.168.1.1", apiKey: "k", verifySsl: true, readOnly: false, writeTools });
+      const { server, handlers } = createMockServer();
+      registerAllTools(server, client, false, { writeTools });
+      const result = await handlers.get("unifi_delete_firewall_zone")({ siteId: "s1", firewallZoneId: "zone-int", confirm: true }, {});
+      expect(result.isError).toBeUndefined();
+      expect(fetchMock.mock.calls.map(([url, options]) => `${(options as RequestInit).method} ${url as string}`)).toEqual([
+        `GET ${HOST}/integration/v1/sites/s1/firewall/zones?offset=0&limit=200`,
+        `DELETE ${HOST}/integration/v1/sites/s1/firewall/zones/zone-int`,
+      ]);
     });
 
     it("guards the controller history routes too", async () => {

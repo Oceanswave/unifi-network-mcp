@@ -104,6 +104,15 @@ export class WanExposure {
     });
   }
 
+  /** A zone delete: refused if it is the WAN zone. */
+  async zoneDelete(zoneId: string): Promise<string | undefined> {
+    if (this.wan.allowExposure) return undefined;
+    return this.refusal(async () => {
+      const zone = await this.zone(zoneId, "the zone");
+      if (this.isWan(zone)) throw new Refusal(`the change would delete the ${label(zone)} zone, which is the WAN`);
+    });
+  }
+
   /** The zone a network is put in, and on an update the zone it leaves: refused if either is the WAN zone. */
   async networkZone(zoneId: string, currentZoneId?: string): Promise<string | undefined> {
     if (this.wan.allowExposure) return undefined;
