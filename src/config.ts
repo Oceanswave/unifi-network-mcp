@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { pemCertificates } from "./tls.js";
+import { errorMessage } from "./utils/responses.js";
 import { WRITE_TOOL_GROUPS, WRITE_TOOLS, parseWriteTools } from "./write-tools.js";
 
 function holdsCertificate(pem: string): boolean {
@@ -81,7 +82,7 @@ export function loadConfig(): Config {
     try {
       caCert = readFileSync(caCertPath, "utf8");
     } catch (err) {
-      console.error(`Configuration error: cannot read UNIFI_NETWORK_CA_CERT (${caCertPath}): ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`Configuration error: cannot read UNIFI_NETWORK_CA_CERT (${caCertPath}): ${errorMessage(err)}`);
       process.exit(1);
     }
   }

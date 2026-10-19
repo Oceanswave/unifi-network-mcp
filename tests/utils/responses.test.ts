@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatSuccess, formatError } from "../../src/utils/responses.js";
+import { formatSuccess, formatError, errorMessage } from "../../src/utils/responses.js";
 
 describe("formatSuccess", () => {
   it("wraps data as compact JSON text content", () => {
@@ -29,6 +29,17 @@ describe("formatSuccess", () => {
   it("does NOT emit structuredContent for arrays or null even when structured=true", () => {
     expect(formatSuccess([1, 2, 3], { structured: true }).structuredContent).toBeUndefined();
     expect(formatSuccess(null, { structured: true }).structuredContent).toBeUndefined();
+  });
+});
+
+describe("errorMessage", () => {
+  it("returns an Error's message", () => {
+    expect(errorMessage(new Error("something broke"))).toBe("something broke");
+  });
+
+  it("stringifies anything else", () => {
+    expect(errorMessage("bad request")).toBe("bad request");
+    expect(errorMessage(42)).toBe("42");
   });
 });
 

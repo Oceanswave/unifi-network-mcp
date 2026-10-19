@@ -18,8 +18,13 @@ export function formatSuccess(data: unknown, opts?: { structured?: boolean }) {
   return result;
 }
 
+/** The message of a thrown value, which need not be an Error. */
+export function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export function formatError(err: unknown) {
-  let message = err instanceof Error ? err.message : String(err);
+  let message = errorMessage(err);
   // fetch reports every network failure as "fetch failed" and keeps the reason
   // (ECONNREFUSED, ENOTFOUND, a certificate error) in cause.
   const cause = err instanceof Error ? err.cause : undefined;
