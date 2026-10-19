@@ -28,6 +28,7 @@ import {
   writeResult,
 } from "../utils/output-schemas.js";
 import { resourceId } from "../utils/params.js";
+import { DEFAULT_WAN_POLICY, WanExposure, wanRefusal, type WanPolicy } from "../utils/wan-exposure.js";
 
 // Request-body fields per management type, from the 11.0.83 POST/PUT schemas.
 const COMMON_FIELDS = ["management", "name", "enabled", "vlanId", "dhcpGuarding"] as const;
@@ -136,7 +137,8 @@ const networkFields = {
 export function registerNetworkTools(
   server: McpServer,
   client: NetworkClient,
-  readOnly = false
+  readOnly = false,
+  wan: WanPolicy = DEFAULT_WAN_POLICY
 ) {
   server.registerTool(
     "unifi_list_networks",
@@ -252,6 +254,10 @@ export function registerNetworkTools(
       try {
         const body = definedEntries(fields);
         checkNetworkBody(body, body);
+        if (typeof body.zoneId === "string") {
+          const exposure = await new WanExposure(client, wan, siteId).networkZone(body.zoneId);
+          if (exposure) return wanRefusal(exposure);
+        }
         if (dryRun) return formatDryRun("POST", `/sites/${siteId}/networks`, body);
         const data = await client.post(`/sites/${siteId}/networks`, body);
         return formatSuccess(data, { structured: true });
@@ -286,6 +292,10 @@ export function registerNetworkTools(
           const { allowed } = fieldsForManagement(updates.management ?? current.management);
           const body = mergeForPut(current, updates, allowed);
           checkNetworkBody(body, updates);
+          if (typeof body.zoneId === "string" && body.zoneId !== current.zoneId) {
+            const exposure = await new WanExposure(client, wan, siteId).networkZone(body.zoneId);
+            if (exposure) return wanRefusal(exposure);
+          }
           if (dryRun) return formatDryRun("PUT", path, body);
           const data = await client.put(path, body);
           return formatSuccess(data, { structured: true });

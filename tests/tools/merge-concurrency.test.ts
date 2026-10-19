@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { createMockServer, createMockClient, mockFn } from "./_helpers.js";
+import { createMockServer, createMockClient, mockFn, ZONES } from "./_helpers.js";
 import { registerAllTools } from "../../src/tools/index.js";
 import type { NetworkClient } from "../../src/client.js";
 
@@ -8,6 +8,8 @@ import type { NetworkClient } from "../../src/client.js";
  * reads the resource, merges and PUTs it back; unserialised, two calls would
  * interleave GET, GET, PUT, PUT and the second PUT would revert the first.
  */
+
+const zonePage = { offset: 0, limit: 200, count: ZONES.length, totalCount: ZONES.length, data: ZONES };
 
 // Yield to the event loop, so unserialised calls interleave.
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -72,10 +74,11 @@ describe("parallel updates to one resource", () => {
     client = createMockClient();
     registerAllTools(server.server, client, false);
     handlers = server.handlers;
-    // A controller holding one resource, answering after a tick.
-    mockFn(client, "get").mockImplementation(async () => {
+    // A controller holding one resource, answering after a tick. The
+    // firewall policy is an ALLOW, so its updates also list the zones.
+    mockFn(client, "get").mockImplementation(async (path: string) => {
       await tick();
-      return { ...stored };
+      return path.includes("/firewall/zones?") ? zonePage : { ...stored };
     });
     for (const method of ["put", "patch"] as const) {
       mockFn(client, method).mockImplementation(async (_path: string, body: Record<string, unknown>) => {
@@ -100,7 +103,8 @@ describe("parallel updates to one resource", () => {
     // Hold the update between its read and its write: the GET snapshots the
     // policy when called and answers only when released.
     let releaseGet!: () => void;
-    mockFn(client, "get").mockImplementation(() => {
+    mockFn(client, "get").mockImplementation((path: string) => {
+      if (path.includes("/firewall/zones?")) return Promise.resolve(zonePage);
       const snapshot = { ...stored };
       return new Promise((resolve) => (releaseGet = () => { resolve(snapshot); }));
     });

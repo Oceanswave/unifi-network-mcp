@@ -107,3 +107,31 @@ export function parseInputSchema(
   }
   return z.object(config.schema as Record<string, z.ZodType>);
 }
+
+const page = (data: unknown[]) => ({ offset: 0, limit: 200, count: data.length, totalCount: data.length, data });
+const zone = (id: string, name: string, origin = "USER_DEFINED", networkIds: string[] = []) =>
+  ({ id, name, networkIds, metadata: { origin } });
+
+/** Firewall zones for the WAN-exposure checks: zone-external is the WAN. */
+export const ZONES = [
+  zone("zone-internal", "Internal", "SYSTEM_DEFINED", ["net-lan"]),
+  zone("zone-external", "External", "SYSTEM_DEFINED", ["net-wan"]),
+  zone("zone-gateway", "Gateway", "SYSTEM_DEFINED"),
+  ...["zone-iot", "zone-lan", "zone1", "zone2", "z1", "z2"].map((id) => zone(id, id)),
+];
+
+/**
+ * Answer the zone and policy listings the WAN-exposure checks read (paged
+ * GETs with an offset); every other GET resolves to other.
+ */
+export function answerWanLookups(
+  client: NetworkClient,
+  other?: unknown,
+  { zones = ZONES, policies = [] as unknown[] } = {}
+) {
+  mockFn(client, "get").mockImplementation((path: string) => {
+    if (path.includes("/firewall/zones?offset=")) return Promise.resolve(page(zones));
+    if (path.includes("/firewall/policies?offset=")) return Promise.resolve(page(policies));
+    return Promise.resolve(other);
+  });
+}

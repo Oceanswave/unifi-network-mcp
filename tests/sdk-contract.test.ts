@@ -6,7 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { registerAllTools } from "../src/tools/index.js";
 import { NetworkClient } from "../src/client.js";
 import { formatDryRun } from "../src/utils/safety.js";
-import { createMockServer, createMockClient, mockFn } from "./tools/_helpers.js";
+import { createMockServer, createMockClient, mockFn, answerWanLookups } from "./tools/_helpers.js";
 
 const fetchMock = vi.hoisted(() => vi.fn());
 vi.mock("undici", async (importOriginal) => ({ ...await importOriginal<typeof import("undici")>(), fetch: fetchMock }));
@@ -22,7 +22,10 @@ describe("dry-run results through the SDK", () => {
 
   beforeAll(async () => {
     const server = new McpServer({ name: "test", version: "0.0.0" });
-    registerAllTools(server, createMockClient(), false);
+    const toolClient = createMockClient();
+    // The zone create below first checks the WAN zone keeps its networks.
+    answerWanLookups(toolClient);
+    registerAllTools(server, toolClient, false);
     const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
     mcpClient = new Client({ name: "test-client", version: "0.0.0" });
     await Promise.all([server.connect(serverTransport), mcpClient.connect(clientTransport)]);

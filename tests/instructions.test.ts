@@ -38,3 +38,18 @@ describe("serverInstructions with UNIFI_NETWORK_WRITE_TOOLS", () => {
     expect(serverInstructions(false)).not.toContain("only these write tools");
   });
 });
+
+describe("serverInstructions and WAN exposure", () => {
+  it("says WAN-exposing writes are refused, by default", () => {
+    expect(serverInstructions(false)).toMatch(/refused outright, and confirm does not override that/);
+  });
+
+  it("drops that line when the operator allows WAN exposure", () => {
+    expect(serverInstructions(false, { allowWanExposure: true })).not.toContain("refused outright");
+  });
+
+  it("does not mention it when no write tool can run", () => {
+    expect(serverInstructions(true)).not.toContain("refused outright");
+    expect(serverInstructions(false, { writeTools: [] })).not.toContain("refused outright");
+  });
+});

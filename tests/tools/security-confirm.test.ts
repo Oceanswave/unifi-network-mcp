@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { createMockServer, createMockClient, mockFn } from "./_helpers.js";
+import { createMockServer, createMockClient, mockFn, answerWanLookups } from "./_helpers.js";
 import { registerAllTools } from "../../src/tools/index.js";
 import type { NetworkClient } from "../../src/client.js";
 
@@ -124,7 +124,8 @@ describe("confirmation for writes that open access", () => {
   for (const { tool, write, current, risky, benign } of cases) {
     describe(tool, () => {
       beforeEach(() => {
-        if (current !== undefined) mockFn(client, "get").mockResolvedValue(current);
+        // ALLOW policies read the zones first (tests/tools/wan-exposure.test.ts).
+        answerWanLookups(client, current);
         mockFn(client, write).mockResolvedValue({ id: "new" });
       });
 

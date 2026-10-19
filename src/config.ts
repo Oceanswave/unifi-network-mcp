@@ -11,6 +11,8 @@ function holdsCertificate(pem: string): boolean {
   }
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const configSchema = z.object({
   host: z.string().min(1).describe("UniFi Network host (IP or hostname)"),
   apiKey: z.string().min(1).describe("UniFi Network API key"),
@@ -41,6 +43,15 @@ const configSchema = z.object({
     })
     .optional()
     .describe("The write tools to register; undefined registers them all"),
+  allowWanExposure: z
+    .literal(true)
+    .optional()
+    .describe("When true, writes that could let traffic in from the WAN fall back to the confirm flow instead of being refused"),
+  wanZoneIds: z
+    .array(z.string().regex(UUID, "UNIFI_NETWORK_WAN_ZONE_IDS must be a comma-separated list of firewall zone IDs (UUIDs)"))
+    .transform((ids) => ids.map((id) => id.toLowerCase()))
+    .optional()
+    .describe("Firewall zone IDs to treat as the WAN, in addition to the system-defined External zone"),
   caCert: z.string()
     .refine(holdsCertificate, "UNIFI_NETWORK_CA_CERT must name a PEM file containing a certificate")
     .optional()
@@ -80,6 +91,10 @@ export function loadConfig(): Config {
     readOnly:
       process.env.UNIFI_NETWORK_READ_ONLY?.toLowerCase() !== "false",
     ...(caCert !== undefined ? { caCert } : {}),
+    ...(process.env.UNIFI_NETWORK_ALLOW_WAN_EXPOSURE?.toLowerCase() === "true"
+      ? { allowWanExposure: true } : {}),
+    ...(process.env.UNIFI_NETWORK_WAN_ZONE_IDS
+      ? { wanZoneIds: process.env.UNIFI_NETWORK_WAN_ZONE_IDS.split(",").map((id) => id.trim()).filter((id) => id !== "") } : {}),
     ...(process.env.UNIFI_NETWORK_WRITE_TOOLS !== undefined
       ? { writeTools: process.env.UNIFI_NETWORK_WRITE_TOOLS } : {}),
   });
