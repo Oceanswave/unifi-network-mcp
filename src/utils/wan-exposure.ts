@@ -190,11 +190,20 @@ export class WanExposure {
   }
 }
 
-/** Any action but BLOCK or REJECT lets traffic through, including a missing one. */
+/** Connection states that only answer traffic already let through, so cannot open a new connection. */
+const RETURN_STATES: readonly unknown[] = ["ESTABLISHED", "RELATED"];
+
+/**
+ * Any action but BLOCK or REJECT lets traffic through, including a missing
+ * one, unless the policy matches only ESTABLISHED and RELATED connections.
+ * A missing, null or empty connectionStateFilter matches every state.
+ */
 function allowsTraffic(policy: Record<string, unknown>): boolean {
   const action = policy.action;
   const type = action !== null && typeof action === "object" && "type" in action ? action.type : undefined;
-  return type !== "BLOCK" && type !== "REJECT";
+  if (type === "BLOCK" || type === "REJECT") return false;
+  const states = policy.connectionStateFilter;
+  return !(Array.isArray(states) && states.length > 0 && states.every((state) => RETURN_STATES.includes(state)));
 }
 
 function sourceZoneId(policy: Record<string, unknown>): string | undefined {
