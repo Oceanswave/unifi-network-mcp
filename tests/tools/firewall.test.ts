@@ -655,6 +655,13 @@ describe("registerFirewallTools", () => {
         expect(config?.annotations.idempotentHint).toBe(true);
       });
 
+      it("describes confirm as judged on the patch alone, without claiming the tool never reads the policy", () => {
+        const { confirm } = parseInputSchema(configs, "unifi_patch_firewall_policy").shape;
+        expect(confirm.description).toContain("judged on the patch alone, so any disable needs it");
+        expect(confirm.description).toContain("checked against the current policy for WAN exposure");
+        expect(confirm.description).not.toMatch(/does not read the policy/);
+      });
+
       it("should return success when client.patch succeeds", async () => {
         const mockData = { id: "policy1", loggingEnabled: true };
         mockFn(client, "patch").mockResolvedValue(mockData);

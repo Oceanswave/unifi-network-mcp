@@ -447,7 +447,7 @@ export function registerFirewallTools(
         confirm: z
           .boolean()
           .optional()
-          .describe("Set true to confirm setting action ALLOW or enabled: false (a PATCH does not read the policy, so any disable needs it); not needed with dryRun: true"),
+          .describe("Set true to confirm setting action ALLOW or enabled: false (confirmation is judged on the patch alone, so any disable needs it; a patch that changes more than logging, flow reporting or enabled: false is also checked against the current policy for WAN exposure, which confirm does not override); not needed with dryRun: true"),
         dryRun: z
           .boolean()
           .optional()
