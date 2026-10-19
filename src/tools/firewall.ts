@@ -336,14 +336,14 @@ export function registerFirewallTools(
       annotations: DESTRUCTIVE,
     },
     async ({ siteId, firewallZoneId, confirm, dryRun }) => {
-      const guard = dryRun ? null : requireConfirmation(confirm, "This will delete the firewall zone");
-      if (guard) return guard;
-
       try {
-        if (dryRun) return formatDryRun("DELETE", `/sites/${siteId}/firewall/zones/${firewallZoneId}`);
-        const data = await client.delete(
-          `/sites/${siteId}/firewall/zones/${firewallZoneId}`
-        );
+        const path = `/sites/${siteId}/firewall/zones/${firewallZoneId}`;
+        const exposure = await new WanExposure(client, wan, siteId).zoneDelete(firewallZoneId);
+        if (exposure) return wanRefusal(exposure, "DELETE", path);
+        const guard = dryRun ? null : requireConfirmation(confirm, "This will delete the firewall zone");
+        if (guard) return guard;
+        if (dryRun) return formatDryRun("DELETE", path);
+        const data = await client.delete(path);
         return formatSuccess(data);
       } catch (err) {
         return formatError(err);

@@ -361,6 +361,50 @@ describe("WAN-exposure refusals", () => {
       expect(mockFn(client, "put")).toHaveBeenCalledTimes(1);
     });
 
+    describe("delete", () => {
+      const del = (firewallZoneId: string, extra: Record<string, unknown> = {}) =>
+        call("unifi_delete_firewall_zone", { siteId: "s1", firewallZoneId, confirm: true, ...extra });
+
+      it("refuses deleting the External zone, even with confirm", async () => {
+        expectRefused(await del("zone-external"), /delete the External zone, which is the WAN/);
+        expect(writes(client)).toEqual([]);
+      });
+
+      it("refuses deleting a zone listed in UNIFI_NETWORK_WAN_ZONE_IDS", async () => {
+        const custom = "00000000-0000-4000-8000-0000000000aa";
+        ({ client, call } = setup({ allowExposure: false, zoneIds: [custom] }));
+        answer(client, { zones: [...ZONES, { id: custom, name: "Uplink", networkIds: [], metadata: { origin: "USER_DEFINED" } }] });
+        expectRefused(await del(custom.toUpperCase()), /delete the Uplink zone, which is the WAN/);
+        expect(writes(client)).toEqual([]);
+      });
+
+      it("reports the refusal on a dry run, before asking for confirm", async () => {
+        const result = await call("unifi_delete_firewall_zone", { siteId: "s1", firewallZoneId: "zone-external", dryRun: true });
+        expectRefused(result, /WAN/);
+        expect(result.structuredContent).toBeUndefined();
+        expectRefused(await call("unifi_delete_firewall_zone", { siteId: "s1", firewallZoneId: "zone-external" }), /WAN/);
+      });
+
+      it("refuses when the zone lookup fails", async () => {
+        answer(client, { zones: new Error("HTTP 403: Forbidden") });
+        expectRefused(await del("zone-iot"), /firewall zones could not be read/);
+        expect(writes(client)).toEqual([]);
+      });
+
+      it("refuses deleting a zone that is not in the zone list", async () => {
+        expectRefused(await del("zone-gone"), /zone-gone\) is not one of this site's firewall zones/);
+        expect(writes(client)).toEqual([]);
+      });
+
+      it("deletes a custom zone, with the usual confirm", async () => {
+        const unconfirmed = await call("unifi_delete_firewall_zone", { siteId: "s1", firewallZoneId: "zone-iot" });
+        expect(unconfirmed.content[0].text).toContain("requires explicit confirmation");
+        mockFn(client, "delete").mockResolvedValue({});
+        expect((await del("zone-iot")).isError).toBeUndefined();
+        expect(mockFn(client, "delete")).toHaveBeenCalledWith("/sites/s1/firewall/zones/zone-iot");
+      });
+    });
+
     it("creates an empty zone without reading the zones", async () => {
       const result = await call("unifi_create_firewall_zone", { siteId: "s1", name: "Empty", networkIds: [] });
       expect(result.isError).toBeUndefined();
@@ -546,6 +590,16 @@ describe("UNIFI_NETWORK_ALLOW_WAN_EXPOSURE=true", () => {
   it("previews an ALLOW from the External zone", async () => {
     const result = await call("unifi_create_firewall_policy", { siteId: "s1", policy: policy("ALLOW", "zone-external"), dryRun: true });
     expect(result.structuredContent).toMatchObject({ dryRun: true });
+  });
+
+  it("restores the confirm flow for deleting the External zone", async () => {
+    const unconfirmed = await call("unifi_delete_firewall_zone", { siteId: "s1", firewallZoneId: "zone-external" });
+    expect(unconfirmed.content[0].text).toContain("requires explicit confirmation");
+    mockFn(client, "delete").mockResolvedValue({});
+    const confirmed = await call("unifi_delete_firewall_zone", { siteId: "s1", firewallZoneId: "zone-external", confirm: true });
+    expect(confirmed.isError).toBeUndefined();
+    expect(mockFn(client, "delete")).toHaveBeenCalledWith("/sites/s1/firewall/zones/zone-external");
+    expect(mockFn(client, "get")).not.toHaveBeenCalled();
   });
 
   it("makes no zone lookups", async () => {

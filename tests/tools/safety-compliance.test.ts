@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { z } from "zod";
-import { createMockServer, createMockClient, mockFn } from "./_helpers.js";
+import { createMockServer, createMockClient, mockFn, answerWanLookups, ZONES } from "./_helpers.js";
 import { registerAllTools } from "../../src/tools/index.js";
 
 /**
@@ -165,6 +165,8 @@ describe("dry-run on destructive tools", () => {
   const { server: mockServer, handlers, configs } = createMockServer();
   const mockClient = createMockClient();
   registerAllTools(mockServer, mockClient, false);
+  // Deleting a zone first checks it is not the WAN zone; id1 is a custom one.
+  answerWanLookups(mockClient, undefined, { zones: [...ZONES, { id: "id1", name: "Custom", networkIds: [], metadata: { origin: "USER_DEFINED" } }] });
   // Only destructive tools always need confirm; others ask for it only when
   // a particular change opens access (tests/tools/security-confirm.test.ts).
   const destructive = [...configs].filter(([, config]) => config.annotations.destructiveHint === true);
