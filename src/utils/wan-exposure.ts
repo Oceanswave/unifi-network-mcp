@@ -102,10 +102,14 @@ export class WanExposure {
     });
   }
 
-  /** The zone a network is put in: refused if it is the WAN zone. */
-  async networkZone(zoneId: string): Promise<string | undefined> {
+  /** The zone a network is put in, and on an update the zone it leaves: refused if either is the WAN zone. */
+  async networkZone(zoneId: string, currentZoneId?: string): Promise<string | undefined> {
     if (this.wan.allowExposure) return undefined;
     return this.refusal(async () => {
+      if (currentZoneId !== undefined) {
+        const current = await this.zone(currentZoneId, "the network's current zoneId");
+        if (this.isWan(current)) throw new Refusal(`the change would move the network out of the ${label(current)} zone, which is the WAN`);
+      }
       const zone = await this.zone(zoneId, "the network's zoneId");
       if (this.isWan(zone)) throw new Refusal(`the change would put the network in the ${label(zone)} zone, which is the WAN`);
     });

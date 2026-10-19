@@ -175,7 +175,7 @@ With writes enabled, the server refuses these changes, whatever `confirm` says, 
 
 - creating, updating or patching a firewall policy so that it allows traffic (any action but `BLOCK` or `REJECT`) from the WAN zone. An update is judged on the full body after merging, and a patch on the policy as the patch would leave it (a patch that only turns logging or flow reporting on or off, or disables the policy, is not checked)
 - changing the WAN zone (its name or networks), or moving networks out of it into another zone
-- creating or updating a network so that it is in the WAN zone
+- creating or updating a network so that it is in the WAN zone, or moving a network out of it
 - reordering the policies for traffic from the WAN zone, which could put an allow ahead of a block
 - updating a traffic matching list that a policy allowing traffic from the WAN uses, since the list decides what that policy lets in
 
