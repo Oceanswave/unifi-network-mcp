@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { createMockServer, createMockClient, mockFn } from "./_helpers.js";
+import { createMockServer, createMockClient, mockFn, answerWanLookups } from "./_helpers.js";
 import { registerNetworkTools } from "../../src/tools/networks.js";
 
 describe("registerNetworkTools", () => {
@@ -240,6 +240,8 @@ describe("registerNetworkTools", () => {
     });
 
     it("should POST a GATEWAY network with its variant fields", async () => {
+      // A zoneId is checked against the WAN zone first (tests/tools/wan-exposure.test.ts).
+      answerWanLookups(client);
       mockFn(client, "post").mockResolvedValue({ id: "net-new" });
 
       const handler = handlers.get("unifi_create_network");
@@ -250,7 +252,7 @@ describe("registerNetworkTools", () => {
         enabled: true,
         vlanId: 10,
         ...gatewayFields,
-        zoneId: "zone-1",
+        zoneId: "zone1",
       });
 
       expect(mockFn(client, "post")).toHaveBeenCalledWith("/sites/site1/networks", {
@@ -259,7 +261,7 @@ describe("registerNetworkTools", () => {
         enabled: true,
         vlanId: 10,
         ...gatewayFields,
-        zoneId: "zone-1",
+        zoneId: "zone1",
       });
       expect(result.isError).toBeUndefined();
     });

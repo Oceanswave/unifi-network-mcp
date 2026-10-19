@@ -19,10 +19,13 @@ async function main() {
 
   const server = new McpServer(
     { name: "unifi-network", title: "UniFi Network", version },
-    { instructions: serverInstructions(config.readOnly, { writeTools: config.writeTools }) }
+    { instructions: serverInstructions(config.readOnly, { writeTools: config.writeTools, allowWanExposure: config.allowWanExposure === true }) }
   );
 
-  registerAllTools(server, client, config.readOnly, { writeTools: config.writeTools });
+  registerAllTools(server, client, config.readOnly, {
+    writeTools: config.writeTools,
+    wan: { allowExposure: config.allowWanExposure === true, zoneIds: config.wanZoneIds ?? [] },
+  });
 
   if (config.readOnly) {
     console.error("UniFi Network MCP server running on stdio (READ-ONLY mode)");
@@ -31,6 +34,9 @@ async function main() {
     console.error(`UniFi Network MCP server running on stdio (write tools: ${tools})`);
   } else {
     console.error("UniFi Network MCP server running on stdio");
+  }
+  if (!config.readOnly && config.allowWanExposure === true) {
+    console.error("WAN-exposure refusals are off (UNIFI_NETWORK_ALLOW_WAN_EXPOSURE=true): such writes only need confirm.");
   }
 
   const transport = new StdioServerTransport();

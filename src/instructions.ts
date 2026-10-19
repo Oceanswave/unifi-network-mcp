@@ -5,7 +5,7 @@
  */
 export function serverInstructions(
   readOnly: boolean,
-  { writeTools }: { writeTools?: readonly string[] } = {}
+  { writeTools, allowWanExposure = false }: { writeTools?: readonly string[]; allowWanExposure?: boolean } = {}
 ): string {
   const lines = [
     "These tools manage one UniFi Network console through its Integration API.",
@@ -25,6 +25,9 @@ export function serverInstructions(
       "Before a change, call the write tool with dryRun: true to preview the exact request; a preview changes nothing.",
       "DESTRUCTIVE tools, and writes that open access (an ALLOW rule, disabling a blocking rule, an open SSID or a changed SSID security type, a large voucher batch), also need confirm: true. Ask the user before passing it.",
     );
+    if (!allowWanExposure) {
+      lines.push("Writes that could let traffic in from the WAN are refused outright, and confirm does not override that: a firewall policy that ALLOWs traffic from the External zone, changing that zone or moving networks into or out of it, reordering its policies, or editing a traffic matching list such a policy uses. Do not retry a refused write; tell the user it has to be made in the UniFi console.");
+    }
   }
   return lines.join("\n");
 }

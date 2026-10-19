@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { NetworkClient, withCallSignal } from "../client.js";
 import { looseOutput } from "../utils/output-schemas.js";
 import { WRITE_TOOLS } from "../write-tools.js";
+import { DEFAULT_WAN_POLICY, type WanPolicy } from "../utils/wan-exposure.js";
 import { registerSystemTools } from "./system.js";
 import { registerSiteTools } from "./sites.js";
 import { registerDeviceTools } from "./devices.js";
@@ -21,6 +22,8 @@ import { registerSupportingTools } from "./supporting.js";
 export interface ToolOptions {
   /** The write tools to register (UNIFI_NETWORK_WRITE_TOOLS); undefined registers them all. */
   writeTools?: readonly string[];
+  /** WAN-exposure refusals (UNIFI_NETWORK_ALLOW_WAN_EXPOSURE, UNIFI_NETWORK_WAN_ZONE_IDS); on by default. */
+  wan?: WanPolicy;
 }
 
 export function registerAllTools(
@@ -30,18 +33,19 @@ export function registerAllTools(
   options: ToolOptions = {}
 ) {
   server = instrumentTools(server, options);
+  const wan = options.wan ?? DEFAULT_WAN_POLICY;
   registerSystemTools(server, client);
   registerSiteTools(server, client);
   registerDeviceTools(server, client, readOnly);
   registerClientTools(server, client, readOnly);
   registerClientHistoryTools(server, client);
-  registerNetworkTools(server, client, readOnly);
+  registerNetworkTools(server, client, readOnly, wan);
   registerWifiTools(server, client, readOnly);
   registerHotspotTools(server, client, readOnly);
-  registerFirewallTools(server, client, readOnly);
+  registerFirewallTools(server, client, readOnly, wan);
   registerAclTools(server, client, readOnly);
   registerDnsPolicyTools(server, client, readOnly);
-  registerTrafficMatchingTools(server, client, readOnly);
+  registerTrafficMatchingTools(server, client, readOnly, wan);
   registerSwitchingTools(server, client);
   registerSupportingTools(server, client);
 }

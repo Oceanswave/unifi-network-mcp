@@ -79,6 +79,7 @@ src/
     secrets.ts        # redactSecrets() / restoreRedacted() for WiFi passphrases
     params.ts         # resourceId() — allowlisted schema for IDs interpolated into paths
     output-schemas.ts # Zod output schemas for tools' structuredContent
+    wan-exposure.ts   # WanExposure — hard refusals for writes that could let traffic in from the WAN
 ```
 
 ## Adding a new tool

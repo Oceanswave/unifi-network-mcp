@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { createMockServer, createMockClient, mockFn, parseInputSchema } from "./_helpers.js";
+import { createMockServer, createMockClient, mockFn, parseInputSchema, answerWanLookups } from "./_helpers.js";
 import { registerFirewallTools } from "../../src/tools/firewall.js";
 
 describe("registerFirewallTools", () => {
@@ -260,6 +260,9 @@ describe("registerFirewallTools", () => {
   describe("write tools", () => {
     beforeEach(() => {
       registerFirewallTools(server, client, false);
+      // Zone changes, ALLOW policies and reorders read the zones first to
+      // find the WAN zone (tests/tools/wan-exposure.test.ts).
+      answerWanLookups(client);
     });
 
     describe("unifi_create_firewall_zone", () => {
@@ -489,7 +492,7 @@ describe("registerFirewallTools", () => {
         mockFn(client, "post").mockResolvedValue(mockData);
 
         const handler = handlers.get("unifi_create_firewall_policy");
-        const policyConfig = { name: "Allow SSH", action: "ALLOW" };
+        const policyConfig = { name: "Block SSH", action: { type: "BLOCK" } };
         const result = await handler({
           siteId: "site123",
           policy: policyConfig,
@@ -504,7 +507,7 @@ describe("registerFirewallTools", () => {
 
       it("should return dry run preview when dryRun=true", async () => {
         const handler = handlers.get("unifi_create_firewall_policy");
-        const policyConfig = { name: "Allow SSH", action: "ALLOW" };
+        const policyConfig = { name: "Block SSH", action: { type: "BLOCK" } };
         const result = await handler({
           siteId: "site123",
           policy: policyConfig,
@@ -539,7 +542,7 @@ describe("registerFirewallTools", () => {
       const path = "/sites/site123/firewall/policies/policy1";
 
       beforeEach(() => {
-        mockFn(client, "get").mockResolvedValue(currentPolicy);
+        answerWanLookups(client, currentPolicy);
       });
 
       it("should register the tool", () => {

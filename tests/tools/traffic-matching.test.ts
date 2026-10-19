@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { createMockServer, createMockClient, mockFn } from "./_helpers.js";
+import { createMockServer, createMockClient, mockFn, answerWanLookups } from "./_helpers.js";
 import { registerTrafficMatchingTools } from "../../src/tools/traffic-matching.js";
 
 describe("registerTrafficMatchingTools", () => {
@@ -124,6 +124,8 @@ describe("registerTrafficMatchingTools", () => {
   describe("write tools", () => {
     beforeEach(() => {
       registerTrafficMatchingTools(server, client, false);
+      // An update first checks no WAN ALLOW policy uses the list (tests/tools/wan-exposure.test.ts).
+      answerWanLookups(client);
     });
 
     describe("unifi_create_traffic_matching_list", () => {

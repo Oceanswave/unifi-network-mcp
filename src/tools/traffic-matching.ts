@@ -18,6 +18,7 @@ import {
   writeResult,
 } from "../utils/output-schemas.js";
 import { resourceId } from "../utils/params.js";
+import { DEFAULT_WAN_POLICY, WanExposure, wanRefusal, type WanPolicy } from "../utils/wan-exposure.js";
 
 const matchingItems = z
   .array(z.object({ type: z.string().describe("Item type, e.g. PORT_NUMBER, IP_ADDRESS, SUBNET") }).loose())
@@ -27,7 +28,8 @@ const matchingItems = z
 export function registerTrafficMatchingTools(
   server: McpServer,
   client: NetworkClient,
-  readOnly = false
+  readOnly = false,
+  wan: WanPolicy = DEFAULT_WAN_POLICY
 ) {
   server.registerTool(
     "unifi_list_traffic_matching_lists",
@@ -151,6 +153,8 @@ export function registerTrafficMatchingTools(
     async ({ siteId, trafficMatchingListId, type, name, items, dryRun }) => {
       try {
         const body = { type, name, items };
+        const exposure = await new WanExposure(client, wan, siteId).matchingList(trafficMatchingListId);
+        if (exposure) return wanRefusal(exposure);
         if (dryRun) return formatDryRun("PUT", `/sites/${siteId}/traffic-matching-lists/${trafficMatchingListId}`, body);
         const data = await client.put(
           `/sites/${siteId}/traffic-matching-lists/${trafficMatchingListId}`,

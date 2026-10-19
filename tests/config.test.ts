@@ -14,6 +14,8 @@ describe("loadConfig", () => {
     "UNIFI_NETWORK_READ_ONLY",
     "UNIFI_NETWORK_CA_CERT",
     "UNIFI_NETWORK_WRITE_TOOLS",
+    "UNIFI_NETWORK_ALLOW_WAN_EXPOSURE",
+    "UNIFI_NETWORK_WAN_ZONE_IDS",
   ] as const;
 
   let saved: Record<string, string | undefined>;
@@ -31,6 +33,8 @@ describe("loadConfig", () => {
     delete process.env.UNIFI_NETWORK_READ_ONLY;
     delete process.env.UNIFI_NETWORK_CA_CERT;
     delete process.env.UNIFI_NETWORK_WRITE_TOOLS;
+    delete process.env.UNIFI_NETWORK_ALLOW_WAN_EXPOSURE;
+    delete process.env.UNIFI_NETWORK_WAN_ZONE_IDS;
   });
 
   afterEach(() => {
@@ -256,6 +260,48 @@ describe("loadConfig", () => {
       delete process.env.UNIFI_NETWORK_READ_ONLY;
       process.env.UNIFI_NETWORK_WRITE_TOOLS = "wifii";
       const { exitMock } = exitOnError();
+      loadConfig();
+      expect(exitMock).toHaveBeenCalledWith(1);
+    });
+  });
+
+  // ── WAN exposure ───────────────────────────────────────────────────
+
+  describe("UNIFI_NETWORK_ALLOW_WAN_EXPOSURE", () => {
+    it("keeps the refusals on when unset", () => {
+      expect(loadConfig().allowWanExposure).toBeUndefined();
+    });
+
+    it.each(["true", "TRUE", "True"])("turns them off for %j", (value) => {
+      process.env.UNIFI_NETWORK_ALLOW_WAN_EXPOSURE = value;
+      expect(loadConfig().allowWanExposure).toBe(true);
+    });
+
+    it.each(["false", "yes", "1", ""])("keeps them on for %j: only true counts", (value) => {
+      process.env.UNIFI_NETWORK_ALLOW_WAN_EXPOSURE = value;
+      expect(loadConfig().allowWanExposure).toBeUndefined();
+    });
+  });
+
+  describe("UNIFI_NETWORK_WAN_ZONE_IDS", () => {
+    const external = "6F1C2A52-3B6D-4A8E-9A0B-2D5E8F7C1A90";
+    const other = "0b6d9c1e-58a4-4f43-8e0f-1c2d3e4f5a6b";
+
+    it("is undefined when unset or empty", () => {
+      expect(loadConfig().wanZoneIds).toBeUndefined();
+      process.env.UNIFI_NETWORK_WAN_ZONE_IDS = "";
+      expect(loadConfig().wanZoneIds).toBeUndefined();
+    });
+
+    it("parses a comma-separated list, lower-cased, ignoring spaces and empty entries", () => {
+      process.env.UNIFI_NETWORK_WAN_ZONE_IDS = ` ${external}, ,${other} `;
+      expect(loadConfig().wanZoneIds).toEqual([external.toLowerCase(), other]);
+    });
+
+    it.each(["external", "zone1", `${external}x`, `${external};${other}`])("exits for %j, which is not a zone UUID", (value) => {
+      process.env.UNIFI_NETWORK_WAN_ZONE_IDS = value;
+      vi.spyOn(console, "error").mockImplementation(vi.fn());
+      const exitMock = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
       loadConfig();
       expect(exitMock).toHaveBeenCalledWith(1);
     });

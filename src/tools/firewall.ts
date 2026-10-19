@@ -29,6 +29,7 @@ import {
   writeResult,
 } from "../utils/output-schemas.js";
 import { resourceId } from "../utils/params.js";
+import { DEFAULT_WAN_POLICY, WanExposure, wanRefusal, type WanPolicy } from "../utils/wan-exposure.js";
 
 // Firewall policy request-body fields, from the 11.0.83 POST/PUT schemas.
 const FIREWALL_POLICY_FIELDS = [
@@ -55,6 +56,9 @@ const FIREWALL_POLICY_REQUIRED = [
   "ipProtocolScope",
   "loggingEnabled",
 ] as const;
+
+// PATCH fields that change what is logged or reported, never what passes.
+const REPORTING_FIELDS: readonly string[] = ["loggingEnabled", "reportFlowEnabled"];
 
 // Present in responses but not part of the request body.
 const FIREWALL_POLICY_READ_ONLY: readonly string[] = ["id", "index", "metadata"];
@@ -92,7 +96,8 @@ const FIREWALL_POLICY_BODY_DOC =
 export function registerFirewallTools(
   server: McpServer,
   client: NetworkClient,
-  readOnly = false
+  readOnly = false,
+  wan: WanPolicy = DEFAULT_WAN_POLICY
 ) {
   server.registerTool(
     "unifi_list_firewall_zones",
@@ -268,6 +273,8 @@ export function registerFirewallTools(
     async ({ siteId, name, networkIds, dryRun }) => {
       try {
         const body = { name, networkIds };
+        const exposure = await new WanExposure(client, wan, siteId).firewallZone(undefined, networkIds);
+        if (exposure) return wanRefusal(exposure);
         if (dryRun) return formatDryRun("POST", `/sites/${siteId}/firewall/zones`, body);
         const data = await client.post(`/sites/${siteId}/firewall/zones`, body);
         return formatSuccess(data, { structured: true });
@@ -299,6 +306,8 @@ export function registerFirewallTools(
     async ({ siteId, firewallZoneId, name, networkIds, dryRun }) => {
       try {
         const body = { name, networkIds };
+        const exposure = await new WanExposure(client, wan, siteId).firewallZone(firewallZoneId, networkIds);
+        if (exposure) return wanRefusal(exposure);
         if (dryRun) return formatDryRun("PUT", `/sites/${siteId}/firewall/zones/${firewallZoneId}`, body);
         const data = await client.put(
           `/sites/${siteId}/firewall/zones/${firewallZoneId}`,
@@ -361,9 +370,11 @@ export function registerFirewallTools(
       annotations: WRITE_NOT_IDEMPOTENT,
     },
     async ({ siteId, policy, confirm, dryRun }) => {
-      const guard = requireConfirmationIf(firewallOpening(undefined, policy), confirm, dryRun);
-      if (guard) return guard;
       try {
+        const exposure = await new WanExposure(client, wan, siteId).firewallPolicy(policy);
+        if (exposure) return wanRefusal(exposure);
+        const guard = requireConfirmationIf(firewallOpening(undefined, policy), confirm, dryRun);
+        if (guard) return guard;
         if (dryRun) return formatDryRun("POST", `/sites/${siteId}/firewall/policies`, policy);
         const data = await client.post(`/sites/${siteId}/firewall/policies`, policy);
         return formatSuccess(data, { structured: true });
@@ -409,6 +420,8 @@ export function registerFirewallTools(
           if (missing.length > 0) {
             throw new Error(`Missing required fields: ${missing.join(", ")}`);
           }
+          const exposure = await new WanExposure(client, wan, siteId).firewallPolicy(body);
+          if (exposure) return wanRefusal(exposure);
           const guard = requireConfirmationIf(firewallOpening(current, body), confirm, dryRun);
           if (guard) return guard;
           if (dryRun) return formatDryRun("PUT", path, body);
@@ -444,19 +457,30 @@ export function registerFirewallTools(
       annotations: WRITE,
     },
     async ({ siteId, firewallPolicyId, policy, confirm, dryRun }) => {
-      // A PATCH reads nothing first, so judge it by what it sets.
+      // Confirmation judges a PATCH by what it sets, without reading the policy.
       const opening = policy.enabled === false
         ? "This disables the firewall policy"
         : firewallOpening(undefined, policy);
-      const guard = requireConfirmationIf(opening, confirm, dryRun);
-      if (guard) return guard;
       try {
         const path = `/sites/${siteId}/firewall/policies/${firewallPolicyId}`;
-        if (dryRun) return formatDryRun("PATCH", path, policy);
         // Queue behind any in-flight update of this policy, whose PUT would
         // otherwise overwrite this change with the values it read earlier.
-        const data = await withResourceLock(path, () => client.patch(path, policy));
-        return formatSuccess(data, { structured: true });
+        return await withResourceLock(path, async () => {
+          // Judge any PATCH that could widen the policy on the policy as it
+          // would leave it; only toggling reporting, or disabling, cannot.
+          const harmless = Object.entries(policy).every(([field, value]) =>
+            REPORTING_FIELDS.includes(field) || (field === "enabled" && value === false));
+          if (!wan.allowExposure && !harmless) {
+            const current = asObject(await client.get(path), "the current firewall policy");
+            const exposure = await new WanExposure(client, wan, siteId).firewallPolicy({ ...current, ...policy });
+            if (exposure) return wanRefusal(exposure);
+          }
+          const guard = requireConfirmationIf(opening, confirm, dryRun);
+          if (guard) return guard;
+          if (dryRun) return formatDryRun("PATCH", path, policy);
+          const data = await client.patch(path, policy);
+          return formatSuccess(data, { structured: true });
+        });
       } catch (err) {
         return formatError(err);
       }
@@ -523,6 +547,8 @@ export function registerFirewallTools(
       dryRun,
     }) => {
       try {
+        const exposure = await new WanExposure(client, wan, siteId).policyOrder(sourceFirewallZoneId);
+        if (exposure) return wanRefusal(exposure);
         const query = `?sourceFirewallZoneId=${encodeURIComponent(sourceFirewallZoneId)}&destinationFirewallZoneId=${encodeURIComponent(destinationFirewallZoneId)}`;
         const body = { orderedFirewallPolicyIds };
         if (dryRun) return formatDryRun("PUT", `/sites/${siteId}/firewall/policies/ordering${query}`, body);
