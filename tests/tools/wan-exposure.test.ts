@@ -487,6 +487,35 @@ describe("WAN-exposure refusals", () => {
       answer(client, { policies: new Error("HTTP 500: boom") });
       expectRefused(await call("unifi_update_traffic_matching_list", update), /firewall policies that might use the list could not be read/);
     });
+
+    it("refuses when the zones cannot be read", async () => {
+      answer(client, { zones: new Error("HTTP 403: Forbidden"), policies: [usingList("ALLOW", "zone-internal")] });
+      expectRefused(await call("unifi_update_traffic_matching_list", update), /firewall zones could not be read/);
+      expect(writes(client)).toEqual([]);
+    });
+
+    it("refuses when neither the zones nor the policies can be read", async () => {
+      answer(client, { zones: new Error("HTTP 403: Forbidden"), policies: new Error("HTTP 500: boom") });
+      expectRefused(await call("unifi_update_traffic_matching_list", update), /could not be read/);
+      expect(writes(client)).toEqual([]);
+    });
+
+    it("requests the zones and the policies together", async () => {
+      let release: (value?: unknown) => void = () => undefined;
+      const held = new Promise((resolve) => { release = resolve; });
+      mockFn(client, "get").mockImplementation(async (path: string) => {
+        await held;
+        return page(path.includes("/firewall/zones?") ? ZONES : []);
+      });
+      const result = call("unifi_update_traffic_matching_list", update);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(mockFn(client, "get").mock.calls.map(([path]) => path)).toEqual([
+        "/sites/s1/firewall/zones?offset=0&limit=200",
+        "/sites/s1/firewall/policies?offset=0&limit=200",
+      ]);
+      release();
+      expect((await result).isError).toBeUndefined();
+    });
   });
 
   it("does not check ACL rules, which have no zone", async () => {

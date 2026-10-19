@@ -132,13 +132,13 @@ export class WanExposure {
   async matchingList(listId: string): Promise<string | undefined> {
     if (this.wan.allowExposure) return undefined;
     return this.refusal(async () => {
-      const zones = await this.zoneList();
-      let policies;
-      try {
-        policies = await listAll(this.client, `/sites/${this.siteId}/firewall/policies`, Policy);
-      } catch (err) {
-        throw new Refusal(`the firewall policies that might use the list could not be read (${errorMessage(err)})`);
-      }
+      // Either lookup failing refuses the write.
+      const [zones, policies] = await Promise.all([
+        this.zoneList(),
+        listAll(this.client, `/sites/${this.siteId}/firewall/policies`, Policy).catch((err: unknown) => {
+          throw new Refusal(`the firewall policies that might use the list could not be read (${errorMessage(err)})`);
+        }),
+      ]);
       const user = policies.find((policy) => {
         // IDs are compared without case: the controller may not care about it.
         if (!allowsTraffic(policy) || !JSON.stringify(policy).toLowerCase().includes(JSON.stringify(listId.toLowerCase()))) return false;
