@@ -54,6 +54,7 @@ src/
   client.ts           # NetworkClient — HTTP wrapper for the Network API
   guard.ts            # guardRequest() — method + path allowlist every request passes before fetch
   instructions.ts     # serverInstructions() — cross-tool guidance sent to MCP hosts
+  write-log.ts        # WriteLog — optional JSON Lines record of every write tool call (UNIFI_NETWORK_WRITE_LOG)
   write-tools.ts      # WRITE_TOOL_GROUPS — every write tool by module; parses UNIFI_NETWORK_WRITE_TOOLS
   tools/              # Tool handlers, one file per API domain
     index.ts          # registerAllTools() — wires all tool modules

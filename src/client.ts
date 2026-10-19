@@ -3,8 +3,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 // older undici whose handlers the Agent from tls.ts (undici 8) rejects.
 import { fetch, type Agent, type RequestInit, type Response } from "undici";
 import { Config } from "./config.js";
-import { guardRequest, type GuardPolicy } from "./guard.js";
+import { GuardError, guardRequest, type GuardPolicy } from "./guard.js";
 import { consoleDispatcher } from "./tls.js";
+import { noteRefusal, noteWriteRequest, noteWriteStatus } from "./write-log.js";
 
 // Well under undici's 300s default, so a stalled controller fails the call
 // before the MCP host gives up on it.
@@ -93,7 +94,7 @@ export class NetworkClient {
     body?: unknown
   ): Promise<unknown> {
     const canonical = `/integration/v1${path}`;
-    guardRequest(method, canonical, this.policy);
+    this.guard(method, canonical);
     const url = `${this.networkUrl}${canonical}`;
     const options: RequestInit = {
       method,
@@ -120,6 +121,7 @@ export class NetworkClient {
       throw err;
     }
 
+    if (method !== "GET") noteWriteStatus(response.status);
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${describeErrorBody(await response.text())}`);
     }
@@ -129,6 +131,17 @@ export class NetworkClient {
       return response.json();
     }
     return response.text();
+  }
+
+  /** Check a request against the guard before anything is sent, and note writes for the write log. */
+  private guard(method: string, path: string): void {
+    try {
+      const route = guardRequest(method, path, this.policy);
+      if (route.tools !== undefined) noteWriteRequest(method, path);
+    } catch (err) {
+      if (err instanceof GuardError) noteRefusal("request_guard", method, path);
+      throw err;
+    }
   }
 
   async get(path: string): Promise<unknown> {
@@ -184,7 +197,7 @@ export class NetworkClient {
 
   private async historyRequest(path: string, body?: unknown): Promise<unknown> {
     const method = body === undefined ? "GET" : "POST";
-    guardRequest(method, path, this.policy);
+    this.guard(method, path);
     const options: RequestInit = {
       method, headers: this.headers,
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),

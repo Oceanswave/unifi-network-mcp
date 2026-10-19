@@ -4,6 +4,7 @@ import { NetworkClient, withCallSignal } from "../client.js";
 import { looseOutput } from "../utils/output-schemas.js";
 import { WRITE_TOOLS } from "../write-tools.js";
 import { DEFAULT_WAN_POLICY, type WanPolicy } from "../utils/wan-exposure.js";
+import type { WriteLog } from "../write-log.js";
 import { registerSystemTools } from "./system.js";
 import { registerSiteTools } from "./sites.js";
 import { registerDeviceTools } from "./devices.js";
@@ -24,6 +25,8 @@ export interface ToolOptions {
   writeTools?: readonly string[];
   /** WAN-exposure refusals (UNIFI_NETWORK_ALLOW_WAN_EXPOSURE, UNIFI_NETWORK_WAN_ZONE_IDS); on by default. */
   wan?: WanPolicy;
+  /** UNIFI_NETWORK_WRITE_LOG; every write tool call appends a line. */
+  writeLog?: WriteLog;
 }
 
 export function registerAllTools(
@@ -61,13 +64,14 @@ export function registerAllTools(
  * - A write tool the operator did not enable (UNIFI_NETWORK_WRITE_TOOLS) is
  *   not registered at all. A write tool missing from WRITE_TOOL_GROUPS, or a
  *   read tool listed there, is a bug: registration throws.
+ * - With a write log, every write tool call is recorded in it.
  * - The outputSchema is published as a loose object. The SDK client validates
  *   structuredContent against the published JSON Schema, and tools pass the
  *   controller's response through; a raw shape publishes
  *   additionalProperties: false, so the first field a firmware update added
  *   would make the tool fail for every client that validates.
  */
-function instrumentTools(server: McpServer, { writeTools }: ToolOptions): McpServer {
+function instrumentTools(server: McpServer, { writeTools, writeLog }: ToolOptions): McpServer {
   const registerTool = (
     name: string,
     config: { title?: string; outputSchema?: z.ZodRawShape | z.ZodObject; annotations?: { readOnlyHint?: boolean } },
@@ -85,7 +89,8 @@ function instrumentTools(server: McpServer, { writeTools }: ToolOptions): McpSer
     }, ((...args: unknown[]) => {
       const extra = args.at(-1) as { signal?: unknown } | undefined;
       const signal = extra?.signal instanceof AbortSignal ? extra.signal : undefined;
-      return withCallSignal(signal, () => handler(...args));
+      const run = () => withCallSignal(signal, () => handler(...args));
+      return write && writeLog ? writeLog.record(name, args[0], run) : run();
     }) as never);
   };
   return new Proxy(server, {

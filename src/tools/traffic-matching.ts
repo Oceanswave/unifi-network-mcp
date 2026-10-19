@@ -154,7 +154,7 @@ export function registerTrafficMatchingTools(
       try {
         const body = { type, name, items };
         const exposure = await new WanExposure(client, wan, siteId).matchingList(trafficMatchingListId);
-        if (exposure) return wanRefusal(exposure);
+        if (exposure) return wanRefusal(exposure, "PUT", `/sites/${siteId}/traffic-matching-lists/${trafficMatchingListId}`);
         if (dryRun) return formatDryRun("PUT", `/sites/${siteId}/traffic-matching-lists/${trafficMatchingListId}`, body);
         const data = await client.put(
           `/sites/${siteId}/traffic-matching-lists/${trafficMatchingListId}`,

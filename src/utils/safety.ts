@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import { noteRefusal } from "../write-log.js";
 
 /** The confirm input of a DESTRUCTIVE tool. */
 export const confirmDestructive = () =>
@@ -68,6 +69,7 @@ export function requireConfirmation(
   action: string
 ): { content: { type: "text"; text: string }[]; isError: true } | null {
   if (confirm !== true) {
+    noteRefusal("confirmation_required");
     return {
       content: [
         {

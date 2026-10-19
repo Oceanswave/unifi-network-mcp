@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { NetworkClient } from "../client.js";
+import { noteRefusal } from "../write-log.js";
 
 /**
  * Hard refusals for writes that would let traffic in from the WAN. Unlike
@@ -194,8 +195,9 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** The result of a refused write. */
-export function wanRefusal(reason: string) {
+/** The result of a refused write; method and path are the write it would have sent. */
+export function wanRefusal(reason: string, method: string, path: string) {
+  noteRefusal("wan_exposure", method, `/integration/v1${path}`);
   return {
     content: [{
       type: "text" as const,
