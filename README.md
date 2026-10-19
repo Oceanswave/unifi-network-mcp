@@ -73,6 +73,10 @@ claude mcp add-json unifi-network '{"command":"node","args":["/path/to/unifi-net
 | `UNIFI_NETWORK_VERIFY_SSL` | No | `true` | Set to `false` to skip TLS certificate verification. Not allowed with `api.ui.com` or together with `UNIFI_NETWORK_CA_CERT` |
 | `UNIFI_NETWORK_READ_ONLY` | No | `true` | Set to `false` to enable write/mutating tools (read-only by default) |
 | `UNIFI_NETWORK_CONSOLE_ID` | No | — | Cloud Connector console ID; used only when `UNIFI_NETWORK_HOST` is `api.ui.com` (see [Cloud Connector](#cloud-connector)) |
+| `UNIFI_NETWORK_WRITE_TOOLS` | No | all write tools | Comma-separated write tool names and/or groups (`devices`, `clients`, `networks`, `wifi`, `hotspot`, `firewall`, `acl`, `dns-policies`, `traffic-matching`) to load; `none` or empty loads none. Unknown names stop the server. Ignored, with a warning, while read-only (see [Limiting write mode](#limiting-write-mode)) |
+| `UNIFI_NETWORK_ALLOW_WAN_EXPOSURE` | No | `false` | Set to `true` to stop refusing writes that could let traffic in from the WAN; they then only need `confirm: true` |
+| `UNIFI_NETWORK_WAN_ZONE_IDS` | No | — | Comma-separated firewall zone IDs (UUIDs) to treat as the WAN, in addition to the system-defined zone named `External`. Recommended when writes are on |
+| `UNIFI_NETWORK_WRITE_LOG` | No | — | Absolute path of a JSON Lines file that every write tool call is appended to. Created `0600` (parent directories `0700`); the server will not start if it is a symlink or writable by others |
 
 UniFi consoles ship with a self-signed certificate, so against a local console the first call usually fails with a certificate error. The safe fix is to trust that one certificate: save it and point `UNIFI_NETWORK_CA_CERT` at the file.
 
@@ -86,7 +90,7 @@ Setting `UNIFI_NETWORK_VERIFY_SSL=false` instead turns off certificate checks fo
 
 ### Choosing an API key
 
-The key carries the rights of the admin who created it, and this server is driven by a model that reads data other people control (client hostnames, device names). Create the key as a dedicated admin with the least role that covers your use: for the default read-only mode, a **View Only** admin, so nothing can be changed even if a tool were misused. Use a full-access admin only when you set `UNIFI_NETWORK_READ_ONLY=false`.
+The key carries the rights of the admin who created it, and this server is driven by a model that reads data other people control (client hostnames, device names). Create the key as a dedicated admin with the least role that covers your use: for the default read-only mode, a **View Only** admin, so nothing can be changed even if a tool were misused. Use a full-access admin only when you set `UNIFI_NETWORK_READ_ONLY=false`, and then also read [Limiting write mode](#limiting-write-mode).
 
 ### Cloud Connector
 
@@ -104,6 +108,9 @@ References: [official Cloud Connector API](https://developer.ui.com/site-manager
 - **Smaller default results**: `unifi_list_client_sessions` and `unifi_list_vouchers` return fewer rows by default, and `unifi_list_client_history` now returns at most `limit` clients, most recently seen first, with `totalCount` and `truncated`; pass `limit` for more. Rows from both history tools carry only the fields their tool descriptions list.
 - **Compact text output**: tool results are compact JSON rather than indented; `structuredContent` is unchanged.
 
+- **Writes that could let traffic in from the WAN are refused**: with writes enabled, a firewall policy that allows traffic from the External zone, a change to that zone or to which networks are in it, a reorder of its policies, or an edit to a traffic matching list such a policy uses now fails even with `confirm: true` (see [WAN-exposure refusals](#wan-exposure-refusals)). Set `UNIFI_NETWORK_ALLOW_WAN_EXPOSURE=true` to go back to needing only `confirm`.
+- **Only the endpoints the tools use**: every request is checked against an allowlist before it is sent. No tool behaves differently; anything else is refused.
+
 One rule is relaxed: a `dryRun: true` preview of a destructive tool no longer needs `confirm`.
 
 ## Safety Features
@@ -119,6 +126,82 @@ This server provides layered safety controls for responsible operation:
 - **Dry-run support** — Every write tool accepts an optional `dryRun: true` parameter that returns a preview of the HTTP request (method, path, body) without making any changes
 - **Safe partial updates** — The UniFi PUT endpoints for WiFi broadcasts, networks, firewall policies, ACL rules and DNS policies replace the whole resource, and some fields reset when omitted (a missing `dhcpGuarding` disables DHCP guarding). Their update tools read the current resource, keep every documented body field, and overlay only the top-level fields you pass, so omitted fields keep their current values. A field you pass replaces the current one whole — nested objects such as `ipv4Configuration`, `securityConfiguration` or a policy's `source` are not deep-merged, so start from what the get tool returns. Pass `null` to clear an optional field. Parallel updates to one resource run one at a time. The dry-run preview shows the merged body (the read still happens)
 - **Secret redaction** — WiFi passphrases (including per-VLAN PPSK keys) are returned as `[REDACTED]` unless the caller passes `includeSecrets: true` to `unifi_list_wifi` / `unifi_get_wifi`. Write-tool echoes and dry-run previews are always redacted, and an update that echoes back `[REDACTED]` keeps the stored passphrase
+- **Request allowlist** — Every request the server makes, reads included, is checked before it is sent against a fixed list of the methods and paths the tools use. Anything else, such as a path with `..` or encoded characters, another application on the console, or a write the server is not set up to make, is refused and never reaches the console
+- **Operator limits for write mode** — `UNIFI_NETWORK_WRITE_TOOLS` loads only the write tools you name, writes that could let traffic in from the WAN are refused outright, and `UNIFI_NETWORK_WRITE_LOG` keeps a record of every write call. See [Limiting write mode](#limiting-write-mode)
+
+## Limiting write mode
+
+An agent with write access reads data that other people control: client hostnames, device names, SSIDs, notes on vouchers. Any of it can be written to look like an instruction, and a model can be misled by it. `dryRun` and `confirm` help when the model behaves, but they are inputs the model itself supplies. The settings below are yours: they hold whatever the model is told, because the server enforces them before anything reaches the console.
+
+### Turning writes on
+
+1. **Use a dedicated, least-privilege key.** Create a separate admin for the agent, limited to the Network application and to the sites it should manage, and generate the key as that admin. Do not reuse your own key.
+2. **Enable writes**: set `UNIFI_NETWORK_READ_ONLY=false`.
+3. **Load only the write tools the job needs**: set `UNIFI_NETWORK_WRITE_TOOLS`, for example `unifi_create_voucher,unifi_delete_voucher` for a front desk, or `wifi` for SSID changes. Other write tools are not registered, so the agent never sees them, and the request allowlist refuses their requests as well.
+4. **Keep the WAN-exposure refusals on**: leave `UNIFI_NETWORK_ALLOW_WAN_EXPOSURE` unset.
+5. **Name your WAN zone**: set `UNIFI_NETWORK_WAN_ZONE_IDS` to the ID of each site's External zone. While the server is still read-only, ask the agent to run `unifi_list_firewall_zones` for each site and copy the `id` of the External zone (system-defined, `metadata.origin` `SYSTEM_DEFINED`). Without the list the server recognises that zone by its name, which can be changed.
+6. **Turn on the write log and watch it**: set `UNIFI_NETWORK_WRITE_LOG` to an absolute path, for example `/home/you/.local/state/unifi-mcp/writes.jsonl`, and look at it after a session (`tail -f` works).
+7. **Try changes with `dryRun: true` first**: ask the agent to preview a change, check the request, then let it run.
+
+A Claude Desktop entry with all of this set:
+
+```json
+{
+  "mcpServers": {
+    "unifi-network": {
+      "command": "npx",
+      "args": ["-y", "@owine/unifi-network-mcp@latest"],
+      "env": {
+        "UNIFI_NETWORK_HOST": "192.168.1.1",
+        "UNIFI_NETWORK_API_KEY": "key-of-the-agent-admin",
+        "UNIFI_NETWORK_CA_CERT": "/home/you/.config/unifi-console.pem",
+        "UNIFI_NETWORK_READ_ONLY": "false",
+        "UNIFI_NETWORK_WRITE_TOOLS": "unifi_create_voucher,unifi_delete_voucher,wifi",
+        "UNIFI_NETWORK_WAN_ZONE_IDS": "6f1c2a52-3b6d-4a8e-9a0b-2d5e8f7c1a90",
+        "UNIFI_NETWORK_WRITE_LOG": "/home/you/.local/state/unifi-mcp/writes.jsonl"
+      }
+    }
+  }
+}
+```
+
+### Write tool limits
+
+`UNIFI_NETWORK_WRITE_TOOLS` takes write tool names from the [Tools](#tools) tables and group names, which match the tool modules: `devices`, `clients`, `networks`, `wifi`, `hotspot`, `firewall`, `acl`, `dns-policies`, `traffic-matching`. Unset, every write tool loads, as before. `none` or an empty value loads none, leaving a read-only tool set while the request allowlist still refuses writes. An unknown name stops the server with a configuration error listing the valid names. Read tools are never affected. The server instructions tell the model which write tools are available.
+
+### WAN-exposure refusals
+
+With writes enabled, the server refuses these changes, whatever `confirm` says, and sends nothing:
+
+- creating, updating or patching a firewall policy so that it allows traffic (any action but `BLOCK` or `REJECT`) from the WAN zone. An update is judged on the full body after merging, and a patch on the policy as the patch would leave it (a patch that only turns logging or flow reporting on or off, or disables the policy, is not checked)
+- changing the WAN zone (its name or networks), or moving networks out of it into another zone
+- creating or updating a network so that it is in the WAN zone
+- reordering the policies for traffic from the WAN zone, which could put an allow ahead of a block
+- updating a traffic matching list that a policy allowing traffic from the WAN uses, since the list decides what that policy lets in
+
+Blocking traffic from the WAN, and allowing traffic from inside to the WAN, are not affected. A dry run runs the same check and reports the refusal. ACL rules are not checked: they are enforced by switches between LAN hosts and have no zone, so they cannot let WAN traffic past the gateway firewall. The Integration API has no port-forwarding endpoint.
+
+The Integration API marks zones only as system- or user-defined, and zone names can be changed, so a zone counts as the WAN when its ID is in `UNIFI_NETWORK_WAN_ZONE_IDS`, or when it is system-defined and named `External` (in any case). Set the ID list: a renamed External zone is otherwise missed. To check a change the server lists the site's firewall zones (and, for a matching list, its policies). If that fails, or the change names a zone that is not in the list, the write is refused rather than allowed unchecked.
+
+A refused call returns:
+
+```text
+Refused: the policy would ALLOW traffic from the External zone, which is the WAN. This server does not make changes that could let traffic in from the WAN, and confirm does not override this; if the change is intended, make it in the UniFi console.
+```
+
+If you do want the agent to make such changes, `UNIFI_NETWORK_ALLOW_WAN_EXPOSURE=true` turns the refusals off; those changes then need `confirm: true` like other changes that open access.
+
+### Write log
+
+With `UNIFI_NETWORK_WRITE_LOG` set, each write tool call appends one line, including dry runs and refused calls. Read tools are not logged.
+
+```json
+{"ts":"2026-10-19T00:12:46.170Z","tsLocal":"2026-10-18T20:12:46.170-04:00","tool":"unifi_create_firewall_policy","args":{"siteId":"5f3a9c1e-2b7d-4e8f-9a6b-0c1d2e3f4a5b","policy":{"name":"SSH in","enabled":true,"action":{"type":"ALLOW"},"source":{"zoneId":"6f1c2a52-3b6d-4a8e-9a0b-2d5e8f7c1a90"},"destination":{"zoneId":"0b6d9c1e-58a4-4f43-8e0f-1c2d3e4f5a6b"}},"confirm":true},"method":"POST","path":"/integration/v1/sites/5f3a9c1e-2b7d-4e8f-9a6b-0c1d2e3f4a5b/firewall/policies","dryRun":false,"outcome":"refused","reason":"wan_exposure","durationMs":29}
+```
+
+`outcome` is `ok` (with the HTTP `status`), `dry_run`, `refused` (with a `reason`: `request_guard`, `wan_exposure` or `confirmation_required`) or `error` (with the HTTP `status` when the console answered). `path` is the path under the Network application, without host, console ID or query string; `method` and `path` are `null` when the call stopped before choosing a request. Arguments are redacted: WiFi passphrases, and any field whose name contains `passphrase`, `password`, `secret`, `key` or `token`. The API key and the console's response bodies are never written.
+
+The file is created with mode `0600`, and missing parent directories with `0700`. The server refuses to start if the path is a symlink, not a regular file, has other hard links, or is writable by group or others. If a line cannot be written (a full disk, say), the tool call still completes and the server reports the problem once on stderr.
 
 ## Structured Output
 
@@ -294,7 +377,13 @@ Configuration errors go to the MCP host's server log and the server exits. Tool 
 | `UniFi controller did not respond within …` | The console is slow. For a write, check whether it was applied before retrying. |
 | `This action requires explicit confirmation: …` | Expected: the change needs `confirm: true`, and the agent should ask you first. |
 | `Use an ID returned by a list or get tool` | The agent passed a name or malformed ID. |
-| No write tools listed | Read-only is the default. Set `UNIFI_NETWORK_READ_ONLY=false` (only `false` counts; any other value stays read-only) and restart the host. |
+| `Request refused by the request guard: …` | The server would only send a request on its allowlist; this one was not, or belongs to a write tool `UNIFI_NETWORK_WRITE_TOOLS` does not enable. Nothing was sent. If a tool you did not modify hits this, please open an issue. |
+| `Refused: … which is the WAN` | Expected: the change could let traffic in from the WAN, and `confirm` does not override it. Make it in the UniFi console (see [WAN-exposure refusals](#wan-exposure-refusals)). |
+| `Refused: the firewall zones could not be read …` or `… is not one of this site's firewall zones` | The WAN check could not run, so the write was refused. Check the key can read the site's firewall zones, and that the zone ID is right. |
+| `UNIFI_NETWORK_WRITE_TOOLS names unknown write tools or groups: …` | A typo or a read tool's name. The message lists the valid names. |
+| A write tool is missing, or `Tool … not found` | `UNIFI_NETWORK_WRITE_TOOLS` does not name it or its group. |
+| `cannot use UNIFI_NETWORK_WRITE_LOG (…)` | The path is a symlink, not a regular file, hard-linked elsewhere, or writable by others (`chmod 600` it), or its directory cannot be created. |
+| No write tools listed | Read-only is the default. Set `UNIFI_NETWORK_READ_ONLY=false` (only `false` counts; any other value stays read-only) and restart the host. If it is set, check `UNIFI_NETWORK_WRITE_TOOLS` is not `none` or empty. |
 | `Controller history returned HTTP …`, `non-JSON data` or `an empty body` | This console or key cannot use the history routes (see [Retained client connections](#retained-client-connections)). It is not an empty history. |
 | `Use the site's internalReference …` | History tools take `internalReference` (often `default`) from `unifi_list_sites`, not the UUID. |
 
