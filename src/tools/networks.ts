@@ -293,7 +293,8 @@ export function registerNetworkTools(
           const body = mergeForPut(current, updates, allowed);
           checkNetworkBody(body, updates);
           if (typeof body.zoneId === "string" && body.zoneId !== current.zoneId) {
-            const exposure = await new WanExposure(client, wan, siteId).networkZone(body.zoneId);
+            const currentZoneId = typeof current.zoneId === "string" ? current.zoneId : undefined;
+            const exposure = await new WanExposure(client, wan, siteId).networkZone(body.zoneId, currentZoneId);
             if (exposure) return wanRefusal(exposure, "PUT", path);
           }
           if (dryRun) return formatDryRun("PUT", path, body);

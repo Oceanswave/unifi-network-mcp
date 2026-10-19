@@ -330,6 +330,25 @@ describe("WAN-exposure refusals", () => {
       expectRefused(await call("unifi_update_network", { siteId: "s1", networkId: "n1", zoneId: "zone-external" }), /External zone/);
     });
 
+    it("refuses moving a network out of the External zone, even with a dry run", async () => {
+      answer(client, { resources: { "/sites/s1/networks/n1": { ...gatewayNetwork, zoneId: "zone-external" } } });
+      const result = await call("unifi_update_network", { siteId: "s1", networkId: "n1", zoneId: "zone-iot" });
+      expectRefused(result, /move the network out of the External zone, which is the WAN/);
+      expectRefused(await call("unifi_update_network", { siteId: "s1", networkId: "n1", zoneId: "zone-iot", dryRun: true }), /out of the External zone/);
+      expect(writes(client)).toEqual([]);
+    });
+
+    it("refuses moving a network out of a zone that is not in the zone list", async () => {
+      answer(client, { resources: { "/sites/s1/networks/n1": { ...gatewayNetwork, zoneId: "zone-gone" } } });
+      expectRefused(await call("unifi_update_network", { siteId: "s1", networkId: "n1", zoneId: "zone-iot" }), /current zoneId \(zone-gone\) is not one of this site's firewall zones/);
+    });
+
+    it("allows editing a network in the External zone that keeps its zone", async () => {
+      answer(client, { resources: { "/sites/s1/networks/n1": { ...gatewayNetwork, zoneId: "zone-external" } } });
+      expect((await call("unifi_update_network", { siteId: "s1", networkId: "n1", name: "Renamed" })).isError).toBeUndefined();
+      expect(mockFn(client, "put")).toHaveBeenCalledTimes(1);
+    });
+
     it("allows moving a network to an internal zone", async () => {
       answer(client, { resources: { "/sites/s1/networks/n1": gatewayNetwork } });
       expect((await call("unifi_update_network", { siteId: "s1", networkId: "n1", zoneId: "zone-iot" })).isError).toBeUndefined();
