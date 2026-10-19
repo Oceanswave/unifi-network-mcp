@@ -256,7 +256,7 @@ export function registerNetworkTools(
         checkNetworkBody(body, body);
         if (typeof body.zoneId === "string") {
           const exposure = await new WanExposure(client, wan, siteId).networkZone(body.zoneId);
-          if (exposure) return wanRefusal(exposure);
+          if (exposure) return wanRefusal(exposure, "POST", `/sites/${siteId}/networks`);
         }
         if (dryRun) return formatDryRun("POST", `/sites/${siteId}/networks`, body);
         const data = await client.post(`/sites/${siteId}/networks`, body);
@@ -294,7 +294,7 @@ export function registerNetworkTools(
           checkNetworkBody(body, updates);
           if (typeof body.zoneId === "string" && body.zoneId !== current.zoneId) {
             const exposure = await new WanExposure(client, wan, siteId).networkZone(body.zoneId);
-            if (exposure) return wanRefusal(exposure);
+            if (exposure) return wanRefusal(exposure, "PUT", path);
           }
           if (dryRun) return formatDryRun("PUT", path, body);
           const data = await client.put(path, body);

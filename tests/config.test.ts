@@ -16,6 +16,7 @@ describe("loadConfig", () => {
     "UNIFI_NETWORK_WRITE_TOOLS",
     "UNIFI_NETWORK_ALLOW_WAN_EXPOSURE",
     "UNIFI_NETWORK_WAN_ZONE_IDS",
+    "UNIFI_NETWORK_WRITE_LOG",
   ] as const;
 
   let saved: Record<string, string | undefined>;
@@ -35,6 +36,7 @@ describe("loadConfig", () => {
     delete process.env.UNIFI_NETWORK_WRITE_TOOLS;
     delete process.env.UNIFI_NETWORK_ALLOW_WAN_EXPOSURE;
     delete process.env.UNIFI_NETWORK_WAN_ZONE_IDS;
+    delete process.env.UNIFI_NETWORK_WRITE_LOG;
   });
 
   afterEach(() => {
@@ -304,6 +306,35 @@ describe("loadConfig", () => {
       const exitMock = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
       loadConfig();
       expect(exitMock).toHaveBeenCalledWith(1);
+    });
+  });
+
+  // ── UNIFI_NETWORK_WRITE_LOG ────────────────────────────────────────
+
+  describe("UNIFI_NETWORK_WRITE_LOG", () => {
+    it("is off when unset or empty", () => {
+      expect(loadConfig().writeLog).toBeUndefined();
+      process.env.UNIFI_NETWORK_WRITE_LOG = "";
+      expect(loadConfig().writeLog).toBeUndefined();
+    });
+
+    it("takes an absolute path", () => {
+      process.env.UNIFI_NETWORK_WRITE_LOG = "/var/log/unifi-mcp/writes.jsonl";
+      expect(loadConfig().writeLog).toBe("/var/log/unifi-mcp/writes.jsonl");
+    });
+
+    it.each(["writes.jsonl", "~/writes.jsonl", "./logs/writes.jsonl"])("exits for the relative path %j", (value) => {
+      process.env.UNIFI_NETWORK_WRITE_LOG = value;
+      const errorMock = vi.spyOn(console, "error").mockImplementation(vi.fn());
+      const exitMock = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+      loadConfig();
+      expect(exitMock).toHaveBeenCalledWith(1);
+      expect(String(errorMock.mock.calls[0][0])).toContain("absolute path");
+    });
+
+    it("is kept in read-only mode, where it simply records nothing", () => {
+      process.env.UNIFI_NETWORK_WRITE_LOG = "/tmp/writes.jsonl";
+      expect(loadConfig()).toMatchObject({ readOnly: true, writeLog: "/tmp/writes.jsonl" });
     });
   });
 });

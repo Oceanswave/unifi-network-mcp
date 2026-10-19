@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { pemCertificates } from "./tls.js";
 import { WRITE_TOOL_GROUPS, WRITE_TOOLS, parseWriteTools } from "./write-tools.js";
@@ -52,6 +53,10 @@ const configSchema = z.object({
     .transform((ids) => ids.map((id) => id.toLowerCase()))
     .optional()
     .describe("Firewall zone IDs to treat as the WAN, in addition to the system-defined External zone"),
+  writeLog: z.string()
+    .refine(isAbsolute, "UNIFI_NETWORK_WRITE_LOG must be an absolute path (MCP hosts do not expand ~)")
+    .optional()
+    .describe("JSON Lines file every write tool call is appended to"),
   caCert: z.string()
     .refine(holdsCertificate, "UNIFI_NETWORK_CA_CERT must name a PEM file containing a certificate")
     .optional()
@@ -95,6 +100,8 @@ export function loadConfig(): Config {
       ? { allowWanExposure: true } : {}),
     ...(process.env.UNIFI_NETWORK_WAN_ZONE_IDS
       ? { wanZoneIds: process.env.UNIFI_NETWORK_WAN_ZONE_IDS.split(",").map((id) => id.trim()).filter((id) => id !== "") } : {}),
+    ...(process.env.UNIFI_NETWORK_WRITE_LOG
+      ? { writeLog: process.env.UNIFI_NETWORK_WRITE_LOG } : {}),
     ...(process.env.UNIFI_NETWORK_WRITE_TOOLS !== undefined
       ? { writeTools: process.env.UNIFI_NETWORK_WRITE_TOOLS } : {}),
   });

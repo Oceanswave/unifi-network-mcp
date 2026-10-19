@@ -6,6 +6,7 @@ import { loadConfig } from "./config.js";
 import { NetworkClient } from "./client.js";
 import { registerAllTools } from "./tools/index.js";
 import { serverInstructions } from "./instructions.js";
+import { openWriteLog } from "./write-log.js";
 
 // Read at runtime rather than importing: package.json sits outside rootDir,
 // so a static import would emit dist/src/ and break the published layout.
@@ -15,6 +16,7 @@ const { version } = createRequire(__filename)("../package.json") as {
 
 async function main() {
   const config = loadConfig();
+  const writeLog = config.writeLog === undefined ? undefined : openWriteLog(config.writeLog, config.apiKey);
   const client = new NetworkClient(config);
 
   const server = new McpServer(
@@ -25,6 +27,7 @@ async function main() {
   registerAllTools(server, client, config.readOnly, {
     writeTools: config.writeTools,
     wan: { allowExposure: config.allowWanExposure === true, zoneIds: config.wanZoneIds ?? [] },
+    ...(writeLog ? { writeLog } : {}),
   });
 
   if (config.readOnly) {
