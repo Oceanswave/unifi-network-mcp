@@ -2,6 +2,7 @@ import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { NetworkClient, withCallSignal } from "../client.js";
 import { looseOutput } from "../utils/output-schemas.js";
+import { WRITE_TOOLS } from "../write-tools.js";
 import { registerSystemTools } from "./system.js";
 import { registerSiteTools } from "./sites.js";
 import { registerDeviceTools } from "./devices.js";
@@ -17,12 +18,18 @@ import { registerTrafficMatchingTools } from "./traffic-matching.js";
 import { registerSwitchingTools } from "./switching.js";
 import { registerSupportingTools } from "./supporting.js";
 
+export interface ToolOptions {
+  /** The write tools to register (UNIFI_NETWORK_WRITE_TOOLS); undefined registers them all. */
+  writeTools?: readonly string[];
+}
+
 export function registerAllTools(
   server: McpServer,
   client: NetworkClient,
-  readOnly = false
+  readOnly = false,
+  options: ToolOptions = {}
 ) {
-  server = instrumentTools(server);
+  server = instrumentTools(server, options);
   registerSystemTools(server, client);
   registerSiteTools(server, client);
   registerDeviceTools(server, client, readOnly);
@@ -47,19 +54,27 @@ export function registerAllTools(
  *   aborts the controller request when the MCP client cancels the call. The
  *   SDK passes that signal in `extra`, the handler's last argument.
  * - Each tool gets a human-readable title derived from its name.
+ * - A write tool the operator did not enable (UNIFI_NETWORK_WRITE_TOOLS) is
+ *   not registered at all. A write tool missing from WRITE_TOOL_GROUPS, or a
+ *   read tool listed there, is a bug: registration throws.
  * - The outputSchema is published as a loose object. The SDK client validates
  *   structuredContent against the published JSON Schema, and tools pass the
  *   controller's response through; a raw shape publishes
  *   additionalProperties: false, so the first field a firmware update added
  *   would make the tool fail for every client that validates.
  */
-function instrumentTools(server: McpServer): McpServer {
+function instrumentTools(server: McpServer, { writeTools }: ToolOptions): McpServer {
   const registerTool = (
     name: string,
-    config: { title?: string; outputSchema?: z.ZodRawShape | z.ZodObject },
+    config: { title?: string; outputSchema?: z.ZodRawShape | z.ZodObject; annotations?: { readOnlyHint?: boolean } },
     handler: (...args: unknown[]) => unknown
-  ) =>
-    server.registerTool(name, {
+  ) => {
+    const write = config.annotations?.readOnlyHint === false;
+    if (write !== WRITE_TOOLS.includes(name)) {
+      throw new Error(`${name} is ${write ? "a write tool missing from" : "a read tool listed in"} WRITE_TOOL_GROUPS (src/write-tools.ts)`);
+    }
+    if (write && writeTools !== undefined && !writeTools.includes(name)) return undefined;
+    return server.registerTool(name, {
       ...config,
       title: config.title ?? toolTitle(name),
       ...(config.outputSchema ? { outputSchema: looseOutput(config.outputSchema) } : {}),
@@ -68,6 +83,7 @@ function instrumentTools(server: McpServer): McpServer {
       const signal = extra?.signal instanceof AbortSignal ? extra.signal : undefined;
       return withCallSignal(signal, () => handler(...args));
     }) as never);
+  };
   return new Proxy(server, {
     get: (target, prop, receiver) =>
       prop === "registerTool" ? registerTool : (Reflect.get(target, prop, receiver) as unknown),

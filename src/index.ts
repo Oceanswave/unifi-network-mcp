@@ -19,13 +19,16 @@ async function main() {
 
   const server = new McpServer(
     { name: "unifi-network", title: "UniFi Network", version },
-    { instructions: serverInstructions(config.readOnly) }
+    { instructions: serverInstructions(config.readOnly, { writeTools: config.writeTools }) }
   );
 
-  registerAllTools(server, client, config.readOnly);
+  registerAllTools(server, client, config.readOnly, { writeTools: config.writeTools });
 
   if (config.readOnly) {
     console.error("UniFi Network MCP server running on stdio (READ-ONLY mode)");
+  } else if (config.writeTools !== undefined) {
+    const tools = config.writeTools.length > 0 ? config.writeTools.join(", ") : "none";
+    console.error(`UniFi Network MCP server running on stdio (write tools: ${tools})`);
   } else {
     console.error("UniFi Network MCP server running on stdio");
   }

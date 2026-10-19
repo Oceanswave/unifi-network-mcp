@@ -13,6 +13,7 @@ describe("loadConfig", () => {
     "UNIFI_NETWORK_VERIFY_SSL",
     "UNIFI_NETWORK_READ_ONLY",
     "UNIFI_NETWORK_CA_CERT",
+    "UNIFI_NETWORK_WRITE_TOOLS",
   ] as const;
 
   let saved: Record<string, string | undefined>;
@@ -29,6 +30,7 @@ describe("loadConfig", () => {
     delete process.env.UNIFI_NETWORK_VERIFY_SSL;
     delete process.env.UNIFI_NETWORK_READ_ONLY;
     delete process.env.UNIFI_NETWORK_CA_CERT;
+    delete process.env.UNIFI_NETWORK_WRITE_TOOLS;
   });
 
   afterEach(() => {
@@ -188,5 +190,74 @@ describe("loadConfig", () => {
     process.env.UNIFI_NETWORK_READ_ONLY = "False";
     const config = loadConfig();
     expect(config.readOnly).toBe(false);
+  });
+
+  // ── UNIFI_NETWORK_WRITE_TOOLS ──────────────────────────────────────
+
+  describe("UNIFI_NETWORK_WRITE_TOOLS", () => {
+    beforeEach(() => {
+      process.env.UNIFI_NETWORK_READ_ONLY = "false";
+    });
+    const exitOnError = () => {
+      const errorMock = vi.spyOn(console, "error").mockImplementation(vi.fn());
+      const exitMock = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+      return { errorMock, exitMock };
+    };
+
+    it("leaves every write tool enabled when unset", () => {
+      expect(loadConfig().writeTools).toBeUndefined();
+    });
+
+    it("expands a group to its tools", () => {
+      process.env.UNIFI_NETWORK_WRITE_TOOLS = "wifi";
+      expect(loadConfig().writeTools).toEqual(["unifi_create_wifi", "unifi_update_wifi", "unifi_delete_wifi"]);
+    });
+
+    it("combines tools and groups, ignoring spaces, empty entries and repeats", () => {
+      process.env.UNIFI_NETWORK_WRITE_TOOLS = " unifi_update_wifi, ,dns-policies,unifi_update_wifi ";
+      expect(loadConfig().writeTools).toEqual([
+        "unifi_update_wifi", "unifi_create_dns_policy", "unifi_update_dns_policy", "unifi_delete_dns_policy",
+      ]);
+    });
+
+    it.each(["", "none", "NONE", " none ", " , "])("enables no write tools for %j", (value) => {
+      process.env.UNIFI_NETWORK_WRITE_TOOLS = value;
+      expect(loadConfig().writeTools).toEqual([]);
+    });
+
+    it.each([
+      ["a misspelt tool", "unifi_update_wfi", "unifi_update_wfi"],
+      ["a read tool", "unifi_list_wifi", "unifi_list_wifi"],
+      ["a module with no write tools", "system", "system"],
+      ["a group in the wrong case", "WiFi", "WiFi"],
+      ["none alongside other names", "none,wifi", "none"],
+    ])("exits for %s, listing the valid names", (_label, value, unknown) => {
+      process.env.UNIFI_NETWORK_WRITE_TOOLS = value;
+      const { errorMock, exitMock } = exitOnError();
+      loadConfig();
+      expect(exitMock).toHaveBeenCalledWith(1);
+      const message = String(errorMock.mock.calls[0][0]);
+      expect(message).toContain(`unknown write tools or groups: ${unknown}`);
+      expect(message).toContain("traffic-matching");
+      expect(message).toContain("unifi_power_cycle_port");
+    });
+
+    it("is ignored with a warning when the server is read-only", () => {
+      process.env.UNIFI_NETWORK_READ_ONLY = "true";
+      process.env.UNIFI_NETWORK_WRITE_TOOLS = "wifi";
+      const errorMock = vi.spyOn(console, "error").mockImplementation(vi.fn());
+      const config = loadConfig();
+      expect(config.readOnly).toBe(true);
+      expect(config.writeTools).toBeUndefined();
+      expect(errorMock).toHaveBeenCalledWith(expect.stringContaining("Ignoring UNIFI_NETWORK_WRITE_TOOLS"));
+    });
+
+    it("still rejects an unknown name when the server is read-only", () => {
+      delete process.env.UNIFI_NETWORK_READ_ONLY;
+      process.env.UNIFI_NETWORK_WRITE_TOOLS = "wifii";
+      const { exitMock } = exitOnError();
+      loadConfig();
+      expect(exitMock).toHaveBeenCalledWith(1);
+    });
   });
 });
