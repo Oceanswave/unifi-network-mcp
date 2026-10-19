@@ -139,6 +139,59 @@ describe("WAN-exposure refusals", () => {
       expect(result.structuredContent).toBeUndefined();
     });
 
+    describe("connection states", () => {
+      it.each([
+        [["ESTABLISHED"]],
+        [["RELATED"]],
+        [["ESTABLISHED", "RELATED"]],
+      ])("allows an ALLOW from the External zone that matches only %j", async (states) => {
+        const result = await call("unifi_create_firewall_policy", {
+          siteId: "s1", policy: policy("ALLOW", "zone-external", { connectionStateFilter: states }), confirm: true,
+        });
+        expect(result.isError).toBeUndefined();
+        expect(mockFn(client, "post")).toHaveBeenCalledTimes(1);
+      });
+
+      it.each([
+        ["no filter", {}],
+        ["an empty filter", { connectionStateFilter: [] }],
+        ["a null filter", { connectionStateFilter: null }],
+        ["NEW", { connectionStateFilter: ["NEW"] }],
+        ["ESTABLISHED and NEW", { connectionStateFilter: ["ESTABLISHED", "NEW"] }],
+        ["INVALID", { connectionStateFilter: ["INVALID"] }],
+      ])("refuses an ALLOW from the External zone with %s", async (_label, extra) => {
+        const result = await call("unifi_create_firewall_policy", { siteId: "s1", policy: policy("ALLOW", "zone-external", extra), confirm: true });
+        expectRefused(result, /External zone, which is the WAN/);
+        expect(writes(client)).toEqual([]);
+      });
+
+      const path = "/sites/s1/firewall/policies/p1";
+      const returnOnly = { id: "p1", ...policy("ALLOW", "zone-external", { connectionStateFilter: ["ESTABLISHED", "RELATED"] }) };
+
+      it("allows renaming an ESTABLISHED/RELATED-only ALLOW from the External zone", async () => {
+        answer(client, { resources: { [path]: returnOnly } });
+        const result = await call("unifi_update_firewall_policy", { siteId: "s1", firewallPolicyId: "p1", policy: { name: "Renamed" }, confirm: true });
+        expect(result.isError).toBeUndefined();
+        expect(mockFn(client, "put")).toHaveBeenCalledWith(path, expect.objectContaining({ name: "Renamed", connectionStateFilter: ["ESTABLISHED", "RELATED"] }));
+      });
+
+      it("refuses an update that clears the filter of an ESTABLISHED/RELATED-only ALLOW, judged on the merged body", async () => {
+        answer(client, { resources: { [path]: returnOnly } });
+        const result = await call("unifi_update_firewall_policy", { siteId: "s1", firewallPolicyId: "p1", policy: { connectionStateFilter: null }, confirm: true });
+        expectRefused(result, /External zone, which is the WAN/);
+        expect(writes(client)).toEqual([]);
+      });
+
+      it("refuses an update that adds NEW to an ESTABLISHED/RELATED-only ALLOW", async () => {
+        answer(client, { resources: { [path]: returnOnly } });
+        const result = await call("unifi_update_firewall_policy", {
+          siteId: "s1", firewallPolicyId: "p1", policy: { connectionStateFilter: ["ESTABLISHED", "RELATED", "NEW"] }, confirm: true,
+        });
+        expectRefused(result, /WAN/);
+        expect(writes(client)).toEqual([]);
+      });
+    });
+
     describe("update", () => {
       const path = "/sites/s1/firewall/policies/p1";
 
@@ -476,6 +529,7 @@ describe("WAN-exposure refusals", () => {
     it.each([
       ["a BLOCK from the External zone", usingList("BLOCK", "zone-external")],
       ["an ALLOW from an internal zone", usingList("ALLOW", "zone-internal")],
+      ["an ESTABLISHED/RELATED-only ALLOW from the External zone", { ...usingList("ALLOW", "zone-external"), connectionStateFilter: ["ESTABLISHED", "RELATED"] }],
     ])("allows changing a list used only by %s", async (_label, used) => {
       answer(client, { policies: [used] });
       expect((await call("unifi_update_traffic_matching_list", update)).isError).toBeUndefined();

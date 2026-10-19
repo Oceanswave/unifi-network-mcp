@@ -173,7 +173,7 @@ A Claude Desktop entry with all of this set:
 
 With writes enabled, the server refuses these changes, whatever `confirm` says, and sends nothing:
 
-- creating, updating or patching a firewall policy so that it allows traffic (any action but `BLOCK` or `REJECT`) from the WAN zone. An update is judged on the full body after merging, and a patch on the policy as the patch would leave it (a patch that only turns logging or flow reporting on or off, or disables the policy, is not checked)
+- creating, updating or patching a firewall policy so that it allows traffic (any action but `BLOCK` or `REJECT`) from the WAN zone. A policy whose `connectionStateFilter` lists only `ESTABLISHED` and/or `RELATED` is exempt, since it only lets return traffic back in; a missing or empty filter matches every state, so it is not. An update is judged on the full body after merging, and a patch on the policy as the patch would leave it (a patch that only turns logging or flow reporting on or off, or disables the policy, is not checked)
 - changing the WAN zone (its name or networks), deleting it, or moving networks out of it into another zone
 - creating or updating a network so that it is in the WAN zone, or moving a network out of it
 - reordering the policies for traffic from the WAN zone, which could put an allow ahead of a block
