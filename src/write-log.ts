@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, writeSync, type Stats } from "node:fs";
 import { dirname } from "node:path";
+import { errorMessage } from "./utils/responses.js";
 import { REDACTED, redactSecrets } from "./utils/secrets.js";
 
 /**
@@ -162,7 +163,7 @@ export class WriteLog {
     } catch (err) {
       if (this.failed) return;
       this.failed = true;
-      console.error(`UNIFI_NETWORK_WRITE_LOG: cannot write the log (${err instanceof Error ? err.message : String(err)}); tool calls continue, but are not being logged.`);
+      console.error(`UNIFI_NETWORK_WRITE_LOG: cannot write the log (${errorMessage(err)}); tool calls continue, but are not being logged.`);
     }
   }
 }
@@ -172,7 +173,7 @@ export function openWriteLog(path: string, apiKey: string): WriteLog {
   try {
     return WriteLog.open(path, apiKey);
   } catch (err) {
-    console.error(`Configuration error: cannot use UNIFI_NETWORK_WRITE_LOG (${path}): ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`Configuration error: cannot use UNIFI_NETWORK_WRITE_LOG (${path}): ${errorMessage(err)}`);
     return process.exit(1);
   }
 }

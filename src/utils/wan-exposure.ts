@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { NetworkClient } from "../client.js";
 import { noteRefusal } from "../write-log.js";
+import { errorMessage } from "./responses.js";
 
 /**
  * Hard refusals for writes that would let traffic in from the WAN. Unlike
@@ -130,7 +131,7 @@ export class WanExposure {
       try {
         policies = await listAll(this.client, `/sites/${this.siteId}/firewall/policies`, Policy);
       } catch (err) {
-        throw new Refusal(`the firewall policies that might use the list could not be read (${message(err)})`);
+        throw new Refusal(`the firewall policies that might use the list could not be read (${errorMessage(err)})`);
       }
       const user = policies.find((policy) => {
         // IDs are compared without case: the controller may not care about it.
@@ -158,7 +159,7 @@ export class WanExposure {
 
   private zoneList(): Promise<Zone[]> {
     this.zones ??= listAll(this.client, `/sites/${this.siteId}/firewall/zones`, Zone).catch((err: unknown) => {
-      throw new Refusal(`the firewall zones could not be read to find the WAN zone (${message(err)})`);
+      throw new Refusal(`the firewall zones could not be read to find the WAN zone (${errorMessage(err)})`);
     });
     return this.zones;
   }
@@ -169,7 +170,7 @@ export class WanExposure {
       return undefined;
     } catch (err) {
       if (err instanceof Refusal) return err.message;
-      return `the WAN check failed (${message(err)})`;
+      return `the WAN check failed (${errorMessage(err)})`;
     }
   }
 }
@@ -189,10 +190,6 @@ function sourceZoneId(policy: Record<string, unknown>): string | undefined {
 
 function label(zone: Zone): string {
   return zone.name ?? zone.id;
-}
-
-function message(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 /** The result of a refused write; method and path are the write it would have sent. */
