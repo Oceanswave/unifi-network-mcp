@@ -319,6 +319,7 @@ describe("loadConfig", () => {
     });
 
     it("takes an absolute path", () => {
+      process.env.UNIFI_NETWORK_READ_ONLY = "false";
       process.env.UNIFI_NETWORK_WRITE_LOG = "/var/log/unifi-mcp/writes.jsonl";
       expect(loadConfig().writeLog).toBe("/var/log/unifi-mcp/writes.jsonl");
     });
@@ -332,9 +333,29 @@ describe("loadConfig", () => {
       expect(String(errorMock.mock.calls[0][0])).toContain("absolute path");
     });
 
-    it("is kept in read-only mode, where it simply records nothing", () => {
+    it("is ignored with a warning when the server is read-only", () => {
       process.env.UNIFI_NETWORK_WRITE_LOG = "/tmp/writes.jsonl";
-      expect(loadConfig()).toMatchObject({ readOnly: true, writeLog: "/tmp/writes.jsonl" });
+      const errorMock = vi.spyOn(console, "error").mockImplementation(vi.fn());
+      const config = loadConfig();
+      expect(config.readOnly).toBe(true);
+      expect(config.writeLog).toBeUndefined();
+      expect(errorMock).toHaveBeenCalledWith(expect.stringContaining("Ignoring UNIFI_NETWORK_WRITE_LOG"));
+    });
+
+    it("still rejects a relative path when the server is read-only", () => {
+      process.env.UNIFI_NETWORK_WRITE_LOG = "writes.jsonl";
+      vi.spyOn(console, "error").mockImplementation(vi.fn());
+      const exitMock = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+      loadConfig();
+      expect(exitMock).toHaveBeenCalledWith(1);
+    });
+
+    it("is kept, without a warning, when writes are on", () => {
+      process.env.UNIFI_NETWORK_READ_ONLY = "false";
+      process.env.UNIFI_NETWORK_WRITE_LOG = "/tmp/writes.jsonl";
+      const errorMock = vi.spyOn(console, "error").mockImplementation(vi.fn());
+      expect(loadConfig()).toMatchObject({ readOnly: false, writeLog: "/tmp/writes.jsonl" });
+      expect(errorMock).not.toHaveBeenCalled();
     });
   });
 });
