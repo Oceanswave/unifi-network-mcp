@@ -89,8 +89,14 @@ export class WriteLog {
    * Open path for appending, creating it 0600 (and its directory 0700) if
    * needed. Throws for a symlink, anything but a regular file, or a file
    * others can write to, which could be truncated or filled with lies.
+   *
+   * On Windows, Node reports every writable file as mode 0666 and a link
+   * count that says nothing about access, and O_NOFOLLOW does not exist, so
+   * only the symlink and regular-file checks apply there: the file's ACL is
+   * the operator's to set.
    */
   static open(path: string, apiKey: string): WriteLog {
+    const windows = process.platform === "win32";
     let existing: Stats | undefined;
     try {
       existing = lstatSync(path);
@@ -100,9 +106,11 @@ export class WriteLog {
     if (existing?.isSymbolicLink()) throw new Error("it is a symlink; point it at the file itself");
     if (existing === undefined) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     // O_NOFOLLOW closes the gap between the check above and the open.
-    const fd = openSync(path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+    const noFollow = windows ? 0 : constants.O_NOFOLLOW;
+    const fd = openSync(path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | noFollow, 0o600);
     const stats = fstatSync(fd);
     const problem = !stats.isFile() ? "it is not a regular file"
+      : windows ? undefined
       : stats.nlink > 1 ? "it has other hard links, so lines could land in another file"
       : (stats.mode & 0o022) !== 0 ? `it is group- or world-writable (mode ${(stats.mode & 0o777).toString(8)}); chmod 600 it`
       : undefined;
