@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, constants, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NetworkClient } from "../src/client.js";
@@ -10,6 +10,12 @@ import { createMockServer, ZONES } from "./tools/_helpers.js";
 // The client calls undici's fetch rather than the global one, so mock that.
 const fetchMock = vi.hoisted(() => vi.fn());
 vi.mock("undici", async (importOriginal) => ({ ...await importOriginal<typeof import("undici")>(), fetch: fetchMock }));
+
+// Spied on, not replaced, to see the flags WriteLog.open passes.
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  return { ...fs, openSync: vi.fn(fs.openSync) };
+});
 
 /**
  * UNIFI_NETWORK_WRITE_LOG records every write tool call as one JSON line:
@@ -250,6 +256,53 @@ describe("WriteLog.open", () => {
     writeFileSync(path, "", { mode: 0o600 });
     linkSync(path, join(dir, "other"));
     expect(() => WriteLog.open(path, API_KEY)).toThrow(/hard links/);
+  });
+
+  describe("on Windows", () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+
+    beforeEach(() => {
+      Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    });
+
+    afterEach(() => {
+      Object.defineProperty(process, "platform", platform);
+    });
+
+    it("accepts the mode Node reports for every writable file there", async () => {
+      const path = join(dir, "writes.jsonl");
+      writeFileSync(path, "");
+      chmodSync(path, 0o666);
+      const log = WriteLog.open(path, API_KEY);
+      await log.record("unifi_restart_device", { siteId: "s1", deviceId: "d1", dryRun: true }, () => Promise.resolve({ content: [] }));
+      expect(readFileSync(path, "utf8")).toContain("unifi_restart_device");
+    });
+
+    it("skips the hard-link check", () => {
+      const path = join(dir, "writes.jsonl");
+      writeFileSync(path, "", { mode: 0o600 });
+      linkSync(path, join(dir, "other"));
+      expect(() => WriteLog.open(path, API_KEY)).not.toThrow();
+    });
+
+    it("opens without O_NOFOLLOW, which Windows does not have", () => {
+      WriteLog.open(join(dir, "writes.jsonl"), API_KEY);
+      const flags = vi.mocked(openSync).mock.lastCall?.[1] as number;
+      expect(flags & constants.O_NOFOLLOW).toBe(0);
+      expect(flags & constants.O_APPEND).toBe(constants.O_APPEND);
+    });
+
+    it("still refuses a symlink and a directory", () => {
+      symlinkSync(join(dir, "elsewhere.jsonl"), join(dir, "link.jsonl"));
+      expect(() => WriteLog.open(join(dir, "link.jsonl"), API_KEY)).toThrow(/symlink/);
+      mkdirSync(join(dir, "log"));
+      expect(() => WriteLog.open(join(dir, "log"), API_KEY)).toThrow();
+    });
+  });
+
+  it("opens with O_NOFOLLOW elsewhere", () => {
+    WriteLog.open(join(dir, "writes.jsonl"), API_KEY);
+    expect((vi.mocked(openSync).mock.lastCall?.[1] as number) & constants.O_NOFOLLOW).toBe(constants.O_NOFOLLOW);
   });
 
   it("refuses a directory", () => {

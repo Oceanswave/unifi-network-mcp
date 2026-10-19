@@ -201,7 +201,7 @@ With `UNIFI_NETWORK_WRITE_LOG` set, each write tool call appends one line, inclu
 
 `outcome` is `ok` (with the HTTP `status`), `dry_run`, `refused` (with a `reason`: `request_guard`, `wan_exposure` or `confirmation_required`) or `error` (with the HTTP `status` when the console answered). `path` is the path under the Network application, without host, console ID or query string; `method` and `path` are `null` when the call stopped before choosing a request. Arguments are redacted: WiFi passphrases, and any field whose name contains `passphrase`, `password`, `secret`, `key` or `token`. The API key and the console's response bodies are never written.
 
-The file is created with mode `0600`, and missing parent directories with `0700`. The server refuses to start if the path is a symlink, not a regular file, has other hard links, or is writable by group or others. If a line cannot be written (a full disk, say), the tool call still completes and the server reports the problem once on stderr.
+The file is created with mode `0600`, and missing parent directories with `0700`. The server refuses to start if the path is a symlink, not a regular file, has other hard links, or is writable by group or others. On Windows, where Node reports every writable file as mode `0666` and cannot open without following symlinks, only the symlink and regular-file checks apply: restrict the file with its ACL (for example, keep it in your user profile). If a line cannot be written (a full disk, say), the tool call still completes and the server reports the problem once on stderr.
 
 ## Structured Output
 
