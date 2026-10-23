@@ -10,40 +10,50 @@ import {
   DESTRUCTIVE,
   formatDryRun,
   requireConfirmation,
+  confirmDestructive,
 } from "../utils/safety.js";
 import {
   listTrafficMatchingListsOutputSchema,
   trafficMatchingListOutputSchema,
+  writeResult,
 } from "../utils/output-schemas.js";
+import { resourceId } from "../utils/params.js";
+import { DEFAULT_WAN_POLICY, WanExposure, wanRefusal, type WanPolicy } from "../utils/wan-exposure.js";
+
+const matchingItems = z
+  .array(z.object({ type: z.string().describe("Item type, e.g. PORT_NUMBER, IP_ADDRESS, SUBNET") }).loose())
+  .min(1)
+  .describe("Non-empty array of tagged item objects, e.g. [{type:'PORT_NUMBER', value:443}]");
 
 export function registerTrafficMatchingTools(
   server: McpServer,
   client: NetworkClient,
-  readOnly = false
+  readOnly = false,
+  wan: WanPolicy = DEFAULT_WAN_POLICY
 ) {
   server.registerTool(
     "unifi_list_traffic_matching_lists",
     {
-      description: "List traffic matching lists at a site — named collections of ports or IPs reused in firewall/ACL rules. Returns: id, type (PORTS/IPV4_ADDRESSES/IPV6_ADDRESSES), name, items[]. Use for: finding the matching-list ID to reference from a firewall policy.",
+      description: "List traffic matching lists at a site — named collections of ports or IPs reused in firewall/ACL rules. Returns: id, type (PORTS/IPV4_ADDRESSES/IPV6_ADDRESSES), name, items[] (tagged objects such as {type:'PORT_NUMBER', value:22} or {type:'SUBNET', value:'<cidr>'}). Use for: finding the matching-list ID to reference from a firewall policy.",
       inputSchema: {
-        siteId: z.string().describe("Site ID"),
+        siteId: resourceId().describe("Site ID"),
         offset: z
           .number()
           .int()
           .nonnegative()
           .optional()
-          .describe("Number of records to skip (default: 0)"),
+          .describe("Number of records to skip"),
         limit: z
           .number()
           .int()
           .min(0)
           .max(200)
           .optional()
-          .describe("Number of records to return (default: 25, max: 200)"),
+          .describe("Number of records to return (API default: 25)"),
         filter: z
           .string()
           .optional()
-          .describe("Filter expression"),
+          .describe("Filter expression. Only id and name are filterable (type is rejected with HTTP 400). Example: name.like('Web*'). NOTE: totalCount ignores the filter here — page by count"),
       },
       outputSchema: listTrafficMatchingListsOutputSchema,
       annotations: READ_ONLY,
@@ -66,8 +76,8 @@ export function registerTrafficMatchingTools(
     {
       description: "Get a specific traffic matching list by ID (full items array).",
       inputSchema: {
-        siteId: z.string().describe("Site ID"),
-        trafficMatchingListId: z.string().describe("Traffic matching list ID"),
+        siteId: resourceId().describe("Site ID"),
+        trafficMatchingListId: resourceId().describe("Traffic matching list ID"),
       },
       outputSchema: trafficMatchingListOutputSchema,
       annotations: READ_ONLY,
@@ -89,23 +99,20 @@ export function registerTrafficMatchingTools(
   server.registerTool(
     "unifi_create_traffic_matching_list",
     {
-      description: "Create a new traffic matching list",
+      description: "Create a new traffic matching list. Items are tagged objects, not strings (live-verified 11.0.83): PORTS lists take {type:'PORT_NUMBER', value:443} (the older 10.4.57 spec also lists {type:'PORT_NUMBER_RANGE', start, stop}); IPV4_ADDRESSES lists take {type:'IP_ADDRESS', value:'192.0.2.1'} or {type:'SUBNET', value:'192.0.2.0/24'} (spec also: IP_ADDRESS_RANGE {start, stop}); IPV6_ADDRESSES lists take IP_ADDRESS or SUBNET. Idempotency: not safe to retry — re-running creates a duplicate list.",
       inputSchema: {
-        siteId: z.string().describe("Site ID"),
+        siteId: resourceId().describe("Site ID"),
         type: z
           .enum(["PORTS", "IPV4_ADDRESSES", "IPV6_ADDRESSES"])
           .describe("List type"),
         name: z.string().min(1).describe("List name"),
-        items: z
-          .array(z.unknown())
-          .min(1)
-          .describe("List items (ports or IP addresses)"),
+        items: matchingItems,
         dryRun: z
           .boolean()
           .optional()
           .describe("Preview this action without executing it"),
       },
-      outputSchema: trafficMatchingListOutputSchema,
+      outputSchema: writeResult(trafficMatchingListOutputSchema),
       annotations: WRITE_NOT_IDEMPOTENT,
     },
     async ({ siteId, type, name, items, dryRun }) => {
@@ -126,26 +133,28 @@ export function registerTrafficMatchingTools(
   server.registerTool(
     "unifi_update_traffic_matching_list",
     {
-      description: "Update a traffic matching list",
+      description: "Replace a traffic matching list (full PUT — type, name and the complete items array are all required; read the current list with unifi_get_traffic_matching_list first). Items are tagged objects, not strings (live-verified 11.0.83): PORTS lists take {type:'PORT_NUMBER', value:443} (the older 10.4.57 spec also lists {type:'PORT_NUMBER_RANGE', start, stop}); IPV4_ADDRESSES lists take {type:'IP_ADDRESS', value:'192.0.2.1'} or {type:'SUBNET', value:'192.0.2.0/24'} (spec also: IP_ADDRESS_RANGE {start, stop}); IPV6_ADDRESSES lists take IP_ADDRESS or SUBNET.",
       inputSchema: {
-        siteId: z.string().describe("Site ID"),
-        trafficMatchingListId: z.string().describe("Traffic matching list ID"),
+        siteId: resourceId().describe("Site ID"),
+        trafficMatchingListId: resourceId().describe("Traffic matching list ID"),
         type: z
           .enum(["PORTS", "IPV4_ADDRESSES", "IPV6_ADDRESSES"])
           .describe("List type"),
         name: z.string().min(1).describe("List name"),
-        items: z.array(z.unknown()).min(1).describe("List items"),
+        items: matchingItems,
         dryRun: z
           .boolean()
           .optional()
           .describe("Preview this action without executing it"),
       },
-      outputSchema: trafficMatchingListOutputSchema,
+      outputSchema: writeResult(trafficMatchingListOutputSchema),
       annotations: WRITE,
     },
     async ({ siteId, trafficMatchingListId, type, name, items, dryRun }) => {
       try {
         const body = { type, name, items };
+        const exposure = await new WanExposure(client, wan, siteId).matchingList(trafficMatchingListId);
+        if (exposure) return wanRefusal(exposure, "PUT", `/sites/${siteId}/traffic-matching-lists/${trafficMatchingListId}`);
         if (dryRun) return formatDryRun("PUT", `/sites/${siteId}/traffic-matching-lists/${trafficMatchingListId}`, body);
         const data = await client.put(
           `/sites/${siteId}/traffic-matching-lists/${trafficMatchingListId}`,
@@ -163,12 +172,9 @@ export function registerTrafficMatchingTools(
     {
       description: "DESTRUCTIVE: Delete a traffic matching list",
       inputSchema: {
-        siteId: z.string().describe("Site ID"),
-        trafficMatchingListId: z.string().describe("Traffic matching list ID"),
-        confirm: z
-          .boolean()
-          .optional()
-          .describe("Must be true to execute this destructive action"),
+        siteId: resourceId().describe("Site ID"),
+        trafficMatchingListId: resourceId().describe("Traffic matching list ID"),
+        confirm: confirmDestructive(),
         dryRun: z
           .boolean()
           .optional()
@@ -177,11 +183,11 @@ export function registerTrafficMatchingTools(
       annotations: DESTRUCTIVE,
     },
     async ({ siteId, trafficMatchingListId, confirm, dryRun }) => {
-      const guard = requireConfirmation(confirm, "This will delete the traffic matching list");
+      const guard = dryRun ? null : requireConfirmation(confirm, "This will delete the traffic matching list");
       if (guard) return guard;
 
       try {
-        if (dryRun) return formatDryRun("DELETE", `/sites/${siteId}/traffic-matching-lists/${trafficMatchingListId}`, {});
+        if (dryRun) return formatDryRun("DELETE", `/sites/${siteId}/traffic-matching-lists/${trafficMatchingListId}`);
         const data = await client.delete(
           `/sites/${siteId}/traffic-matching-lists/${trafficMatchingListId}`
         );

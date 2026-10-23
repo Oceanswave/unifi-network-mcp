@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { createMockServer, createMockClient, mockFn } from "./_helpers.js";
+import { createMockServer, createMockClient, mockFn, answerWanLookups } from "./_helpers.js";
 import { registerTrafficMatchingTools } from "../../src/tools/traffic-matching.js";
 
 describe("registerTrafficMatchingTools", () => {
@@ -86,7 +86,7 @@ describe("registerTrafficMatchingTools", () => {
           id: "list1",
           name: "Web Ports",
           type: "PORTS",
-          items: ["80", "443"],
+          items: [{ type: "PORT_NUMBER", value: 80 }, { type: "PORT_NUMBER", value: 443 }],
         };
         mockFn(client, "get").mockResolvedValue(mockData);
 
@@ -124,6 +124,8 @@ describe("registerTrafficMatchingTools", () => {
   describe("write tools", () => {
     beforeEach(() => {
       registerTrafficMatchingTools(server, client, false);
+      // An update first checks no WAN ALLOW policy uses the list (tests/tools/wan-exposure.test.ts).
+      answerWanLookups(client);
     });
 
     describe("unifi_create_traffic_matching_list", () => {
@@ -143,7 +145,7 @@ describe("registerTrafficMatchingTools", () => {
           id: "list2",
           name: "Custom Ports",
           type: "PORTS",
-          items: ["8080", "8443"],
+          items: [{ type: "PORT_NUMBER", value: 8080 }, { type: "PORT_NUMBER", value: 8443 }],
         };
         mockFn(client, "post").mockResolvedValue(mockData);
 
@@ -152,7 +154,7 @@ describe("registerTrafficMatchingTools", () => {
           siteId: "site123",
           type: "PORTS",
           name: "Custom Ports",
-          items: ["8080", "8443"],
+          items: [{ type: "PORT_NUMBER", value: 8080 }, { type: "PORT_NUMBER", value: 8443 }],
         });
 
         expect(mockFn(client, "post")).toHaveBeenCalledWith(
@@ -160,7 +162,7 @@ describe("registerTrafficMatchingTools", () => {
           {
             type: "PORTS",
             name: "Custom Ports",
-            items: ["8080", "8443"],
+            items: [{ type: "PORT_NUMBER", value: 8080 }, { type: "PORT_NUMBER", value: 8443 }],
           }
         );
         expect(result.content).toBeDefined();
@@ -172,7 +174,7 @@ describe("registerTrafficMatchingTools", () => {
           id: "list3",
           name: "Office Networks",
           type: "IPV4_ADDRESSES",
-          items: ["192.168.1.0/24", "10.0.0.0/8"],
+          items: [{ type: "SUBNET", value: "192.168.1.0/24" }, { type: "SUBNET", value: "10.0.0.0/8" }],
         };
         mockFn(client, "post").mockResolvedValue(mockData);
 
@@ -181,7 +183,7 @@ describe("registerTrafficMatchingTools", () => {
           siteId: "site123",
           type: "IPV4_ADDRESSES",
           name: "Office Networks",
-          items: ["192.168.1.0/24", "10.0.0.0/8"],
+          items: [{ type: "SUBNET", value: "192.168.1.0/24" }, { type: "SUBNET", value: "10.0.0.0/8" }],
         });
 
         expect(mockFn(client, "post")).toHaveBeenCalledWith(
@@ -189,7 +191,7 @@ describe("registerTrafficMatchingTools", () => {
           {
             type: "IPV4_ADDRESSES",
             name: "Office Networks",
-            items: ["192.168.1.0/24", "10.0.0.0/8"],
+            items: [{ type: "SUBNET", value: "192.168.1.0/24" }, { type: "SUBNET", value: "10.0.0.0/8" }],
           }
         );
         expect(result.content).toBeDefined();
@@ -204,7 +206,7 @@ describe("registerTrafficMatchingTools", () => {
           siteId: "site123",
           type: "PORTS",
           name: "Test",
-          items: ["80"],
+          items: [{ type: "PORT_NUMBER", value: 80 }],
         });
 
         expect(result.isError).toBe(true);
@@ -216,14 +218,14 @@ describe("registerTrafficMatchingTools", () => {
           siteId: "site123",
           type: "PORTS",
           name: "Custom Ports",
-          items: ["8080", "8443"],
+          items: [{ type: "PORT_NUMBER", value: 8080 }, { type: "PORT_NUMBER", value: 8443 }],
           dryRun: true,
         });
 
         expect(mockFn(client, "post")).not.toHaveBeenCalled();
         expect(result.content).toBeDefined();
         const text = result.content[0].text;
-        expect(text).toContain('"dryRun": true');
+        expect(text).toContain('"dryRun":true');
         expect(text).toContain("POST");
         expect(text).toContain("/sites/site123/traffic-matching-lists");
       });
@@ -246,7 +248,7 @@ describe("registerTrafficMatchingTools", () => {
           id: "list1",
           name: "Web Ports Updated",
           type: "PORTS",
-          items: ["80", "443", "8080"],
+          items: [{ type: "PORT_NUMBER", value: 80 }, { type: "PORT_NUMBER", value: 443 }, { type: "PORT_NUMBER", value: 8080 }],
         };
         mockFn(client, "put").mockResolvedValue(mockData);
 
@@ -256,7 +258,7 @@ describe("registerTrafficMatchingTools", () => {
           trafficMatchingListId: "list1",
           type: "PORTS",
           name: "Web Ports Updated",
-          items: ["80", "443", "8080"],
+          items: [{ type: "PORT_NUMBER", value: 80 }, { type: "PORT_NUMBER", value: 443 }, { type: "PORT_NUMBER", value: 8080 }],
         });
 
         expect(mockFn(client, "put")).toHaveBeenCalledWith(
@@ -264,7 +266,7 @@ describe("registerTrafficMatchingTools", () => {
           {
             type: "PORTS",
             name: "Web Ports Updated",
-            items: ["80", "443", "8080"],
+            items: [{ type: "PORT_NUMBER", value: 80 }, { type: "PORT_NUMBER", value: 443 }, { type: "PORT_NUMBER", value: 8080 }],
           }
         );
         expect(result.content).toBeDefined();
@@ -281,7 +283,7 @@ describe("registerTrafficMatchingTools", () => {
           trafficMatchingListId: "list1",
           type: "PORTS",
           name: "Updated",
-          items: ["80"],
+          items: [{ type: "PORT_NUMBER", value: 80 }],
         });
 
         expect(result.isError).toBe(true);
@@ -294,14 +296,14 @@ describe("registerTrafficMatchingTools", () => {
           trafficMatchingListId: "list1",
           type: "PORTS",
           name: "Web Ports Updated",
-          items: ["80", "443", "8080"],
+          items: [{ type: "PORT_NUMBER", value: 80 }, { type: "PORT_NUMBER", value: 443 }, { type: "PORT_NUMBER", value: 8080 }],
           dryRun: true,
         });
 
         expect(mockFn(client, "put")).not.toHaveBeenCalled();
         expect(result.content).toBeDefined();
         const text = result.content[0].text;
-        expect(text).toContain('"dryRun": true');
+        expect(text).toContain('"dryRun":true');
         expect(text).toContain("PUT");
         expect(text).toContain("/sites/site123/traffic-matching-lists/list1");
       });
@@ -363,7 +365,7 @@ describe("registerTrafficMatchingTools", () => {
         expect(mockFn(client, "delete")).not.toHaveBeenCalled();
         expect(result.content).toBeDefined();
         const text = result.content[0].text;
-        expect(text).toContain('"dryRun": true');
+        expect(text).toContain('"dryRun":true');
         expect(text).toContain("DELETE");
         expect(text).toContain("/sites/site123/traffic-matching-lists/list1");
       });

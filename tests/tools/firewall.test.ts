@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { createMockServer, createMockClient, mockFn, parseInputSchema } from "./_helpers.js";
+import { createMockServer, createMockClient, mockFn, parseInputSchema, answerWanLookups } from "./_helpers.js";
 import { registerFirewallTools } from "../../src/tools/firewall.js";
 
 describe("registerFirewallTools", () => {
@@ -260,6 +260,9 @@ describe("registerFirewallTools", () => {
   describe("write tools", () => {
     beforeEach(() => {
       registerFirewallTools(server, client, false);
+      // Zone changes, ALLOW policies and reorders read the zones first to
+      // find the WAN zone (tests/tools/wan-exposure.test.ts).
+      answerWanLookups(client);
     });
 
     describe("unifi_create_firewall_zone", () => {
@@ -319,7 +322,7 @@ describe("registerFirewallTools", () => {
         expect(mockFn(client, "post")).not.toHaveBeenCalled();
         expect(result.content).toBeDefined();
         const text = result.content[0].text;
-        expect(text).toContain('"dryRun": true');
+        expect(text).toContain('"dryRun":true');
         expect(text).toContain("POST");
         expect(text).toContain("/sites/site123/firewall/zones");
       });
@@ -385,7 +388,7 @@ describe("registerFirewallTools", () => {
         expect(mockFn(client, "put")).not.toHaveBeenCalled();
         expect(result.content).toBeDefined();
         const text = result.content[0].text;
-        expect(text).toContain('"dryRun": true');
+        expect(text).toContain('"dryRun":true');
         expect(text).toContain("PUT");
       });
     });
@@ -446,7 +449,7 @@ describe("registerFirewallTools", () => {
         expect(mockFn(client, "delete")).not.toHaveBeenCalled();
         expect(result.content).toBeDefined();
         const text = result.content[0].text;
-        expect(text).toContain('"dryRun": true');
+        expect(text).toContain('"dryRun":true');
         expect(text).toContain("DELETE");
       });
 
@@ -489,7 +492,7 @@ describe("registerFirewallTools", () => {
         mockFn(client, "post").mockResolvedValue(mockData);
 
         const handler = handlers.get("unifi_create_firewall_policy");
-        const policyConfig = { name: "Allow SSH", action: "ALLOW" };
+        const policyConfig = { name: "Block SSH", action: { type: "BLOCK" } };
         const result = await handler({
           siteId: "site123",
           policy: policyConfig,
@@ -504,7 +507,7 @@ describe("registerFirewallTools", () => {
 
       it("should return dry run preview when dryRun=true", async () => {
         const handler = handlers.get("unifi_create_firewall_policy");
-        const policyConfig = { name: "Allow SSH", action: "ALLOW" };
+        const policyConfig = { name: "Block SSH", action: { type: "BLOCK" } };
         const result = await handler({
           siteId: "site123",
           policy: policyConfig,
@@ -512,11 +515,36 @@ describe("registerFirewallTools", () => {
         });
 
         expect(mockFn(client, "post")).not.toHaveBeenCalled();
-        expect(result.content[0].text).toContain('"dryRun": true');
+        expect(result.content[0].text).toContain('"dryRun":true');
       });
     });
 
     describe("unifi_update_firewall_policy", () => {
+      // Shape captured live from an 11.0.83 user-defined policy (values replaced).
+      const currentPolicy = {
+        id: "policy1",
+        enabled: true,
+        name: "Allow SSH",
+        description: "",
+        index: 10000,
+        action: { type: "ALLOW", allowReturnTraffic: false },
+        source: { zoneId: "zone-internal" },
+        destination: { zoneId: "zone-external" },
+        ipProtocolScope: { ipVersion: "IPV4_AND_IPV6", protocolFilter: { type: "PRESET", preset: { name: "TCP_UDP" } } },
+        loggingEnabled: false,
+        reportFlowEnabled: false,
+        metadata: { origin: "USER_DEFINED" },
+      };
+      // The documented PUT body: the GET response minus its read-only fields.
+    const currentBody = Object.fromEntries(
+      Object.entries(currentPolicy).filter(([field]) => !["id", "index", "metadata"].includes(field))
+    );
+      const path = "/sites/site123/firewall/policies/policy1";
+
+      beforeEach(() => {
+        answerWanLookups(client, currentPolicy);
+      });
+
       it("should register the tool", () => {
         expect(handlers.has("unifi_update_firewall_policy")).toBe(true);
       });
@@ -526,37 +554,96 @@ describe("registerFirewallTools", () => {
         expect(config?.annotations.idempotentHint).toBe(true);
       });
 
-      it("should return success when client.put succeeds", async () => {
-        const mockData = { id: "policy1", name: "Allow SSH Updated" };
-        mockFn(client, "put").mockResolvedValue(mockData);
+      it("should read the current policy and PUT the merged full body", async () => {
+        mockFn(client, "put").mockResolvedValue({ ...currentPolicy, name: "Allow SSH Updated" });
 
-        const handler = handlers.get("unifi_update_firewall_policy");
-        const policyConfig = { name: "Allow SSH Updated", action: "ALLOW" };
-        const result = await handler({
+        const result = await handlers.get("unifi_update_firewall_policy")({
           siteId: "site123",
           firewallPolicyId: "policy1",
-          policy: policyConfig,
+          policy: { name: "Allow SSH Updated" },
         });
 
-        expect(mockFn(client, "put")).toHaveBeenCalledWith(
-          "/sites/site123/firewall/policies/policy1",
-          policyConfig
-        );
-        expect(result.content).toBeDefined();
+        expect(mockFn(client, "get")).toHaveBeenCalledWith(path);
+        expect(mockFn(client, "put")).toHaveBeenCalledWith(path, { ...currentBody, name: "Allow SSH Updated" });
+        expect(result.isError).toBeUndefined();
       });
 
-      it("should return dry run preview when dryRun=true", async () => {
-        const handler = handlers.get("unifi_update_firewall_policy");
-        const policyConfig = { name: "Allow SSH Updated", action: "ALLOW" };
-        const result = await handler({
+      it("should keep reportFlowEnabled=false instead of letting the PUT default it to true", async () => {
+        mockFn(client, "put").mockResolvedValue(currentPolicy);
+
+        await handlers.get("unifi_update_firewall_policy")({
           siteId: "site123",
           firewallPolicyId: "policy1",
-          policy: policyConfig,
+          policy: { enabled: false },
+        });
+
+        expect(mockFn(client, "put").mock.calls[0][1].reportFlowEnabled).toBe(false);
+      });
+
+      it("should ignore read-only fields when the caller echoes back a full GET response", async () => {
+        mockFn(client, "put").mockResolvedValue(currentPolicy);
+
+        await handlers.get("unifi_update_firewall_policy")({
+          siteId: "site123",
+          firewallPolicyId: "policy1",
+          policy: { ...currentPolicy, loggingEnabled: true },
+        });
+
+        const body = mockFn(client, "put").mock.calls[0][1];
+        expect(body).toEqual({ ...currentBody, loggingEnabled: true });
+      });
+
+      it("should reject fields the PUT body does not accept", async () => {
+        const result = await handlers.get("unifi_update_firewall_policy")({
+          siteId: "site123",
+          firewallPolicyId: "policy1",
+          policy: { protocol: "TCP" },
+        });
+
+        expect(mockFn(client, "get")).not.toHaveBeenCalled();
+        expect(mockFn(client, "put")).not.toHaveBeenCalled();
+        expect(result.content[0].text).toContain("Fields not accepted by the firewall policy PUT body: protocol");
+      });
+
+      it("should send an explicit null to clear an optional field", async () => {
+        mockFn(client, "put").mockResolvedValue(currentPolicy);
+
+        await handlers.get("unifi_update_firewall_policy")({
+          siteId: "site123",
+          firewallPolicyId: "policy1",
+          policy: { schedule: null },
+          // A null schedule makes the policy always active: a change to what it matches.
+          confirm: true,
+        });
+
+        expect(mockFn(client, "put").mock.calls[0][1].schedule).toBeNull();
+      });
+
+      it("should return the merged body as a dry run preview without writing", async () => {
+        const result = await handlers.get("unifi_update_firewall_policy")({
+          siteId: "site123",
+          firewallPolicyId: "policy1",
+          policy: { name: "Allow SSH Updated" },
           dryRun: true,
         });
 
         expect(mockFn(client, "put")).not.toHaveBeenCalled();
-        expect(result.content[0].text).toContain('"dryRun": true');
+        const preview = JSON.parse(result.content[0].text);
+        expect(preview.dryRun).toBe(true);
+        expect(preview.wouldExecute.body).toEqual({ ...currentBody, name: "Allow SSH Updated" });
+      });
+
+      it("should return error when client.put fails", async () => {
+        mockFn(client, "put").mockRejectedValue(new Error("HTTP 400: bad request"));
+
+        const result = await handlers.get("unifi_update_firewall_policy")({
+          siteId: "site123",
+          firewallPolicyId: "policy1",
+          policy: { name: "x" },
+        });
+
+        expect(result.isError).toBe(true);
+        expect(result.content[0].text).toContain("HTTP 400");
       });
     });
 
@@ -570,12 +657,19 @@ describe("registerFirewallTools", () => {
         expect(config?.annotations.idempotentHint).toBe(true);
       });
 
+      it("describes confirm as judged on the current policy with the patch applied", () => {
+        const { confirm } = parseInputSchema(configs, "unifi_patch_firewall_policy").shape;
+        expect(confirm.description).toContain("judged on the current policy with the patch applied");
+        expect(confirm.description).toContain("confirm does not override that");
+        expect(confirm.description).not.toMatch(/does not read the policy|patch alone/);
+      });
+
       it("should return success when client.patch succeeds", async () => {
         const mockData = { id: "policy1", loggingEnabled: true };
         mockFn(client, "patch").mockResolvedValue(mockData);
 
         const handler = handlers.get("unifi_patch_firewall_policy");
-        const policyPatch = { loggingEnabled: true };
+        const policyPatch = { loggingEnabled: true, reportFlowEnabled: false };
         const result = await handler({
           siteId: "site123",
           firewallPolicyId: "policy1",
@@ -600,7 +694,7 @@ describe("registerFirewallTools", () => {
         });
 
         expect(mockFn(client, "patch")).not.toHaveBeenCalled();
-        expect(result.content[0].text).toContain('"dryRun": true');
+        expect(result.content[0].text).toContain('"dryRun":true');
       });
     });
 
@@ -642,7 +736,7 @@ describe("registerFirewallTools", () => {
         });
 
         expect(mockFn(client, "delete")).not.toHaveBeenCalled();
-        expect(result.content[0].text).toContain('"dryRun": true');
+        expect(result.content[0].text).toContain('"dryRun":true');
       });
 
       it("should return error when confirm is not provided", async () => {
@@ -689,6 +783,8 @@ describe("registerFirewallTools", () => {
           beforeSystemDefined: ["policy1"],
           afterSystemDefined: ["policy2"],
         };
+        // The current order, read to judge the reorder; unchanged here.
+        answerWanLookups(client, { orderedFirewallPolicyIds: ordering });
         const result = await handler({
           siteId: "site123",
           sourceFirewallZoneId: "zone1",
@@ -709,6 +805,8 @@ describe("registerFirewallTools", () => {
           beforeSystemDefined: ["policy1"],
           afterSystemDefined: ["policy2"],
         };
+        // The current order, read to judge the reorder; unchanged here.
+        answerWanLookups(client, { orderedFirewallPolicyIds: ordering });
         const result = await handler({
           siteId: "site123",
           sourceFirewallZoneId: "zone1",
@@ -718,7 +816,7 @@ describe("registerFirewallTools", () => {
         });
 
         expect(mockFn(client, "put")).not.toHaveBeenCalled();
-        expect(result.content[0].text).toContain('"dryRun": true');
+        expect(result.content[0].text).toContain('"dryRun":true');
       });
     });
   });

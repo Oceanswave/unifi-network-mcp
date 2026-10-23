@@ -7,8 +7,18 @@ interface ToolConfig {
   description: string;
   annotations: Record<string, unknown>;
   schema: Record<string, unknown>;
-  /** Undefined when the tool declares no outputSchema. */
-  outputSchema?: Record<string, unknown>;
+  /** Undefined when the tool declares no outputSchema; a loose Zod object via registerAllTools. */
+  outputSchema?: unknown;
+}
+
+/** A Map whose get() throws for an unknown tool, so a typo fails loudly and
+ * callers need no undefined check. */
+class ToolMap<V> extends Map<string, V> {
+  override get(name: string): V {
+    const value = super.get(name);
+    if (value === undefined) throw new Error(`No tool registered as ${name}`);
+    return value;
+  }
 }
 
 /**
@@ -19,8 +29,8 @@ interface ToolConfig {
  *   server.registerTool(name, { description, inputSchema, outputSchema, annotations }, handler)
  */
 export function createMockServer() {
-  const handlers = new Map<string, (...args: any[]) => any>();
-  const configs = new Map<string, ToolConfig>();
+  const handlers = new ToolMap<(...args: any[]) => any>();
+  const configs = new ToolMap<ToolConfig>();
   const server = {
     registerTool: vi.fn(
       (
@@ -56,6 +66,11 @@ export function createMockClient() {
     put: vi.fn(),
     patch: vi.fn(),
     delete: vi.fn(),
+    getClientHistory: vi.fn(),
+    getClientSessions: vi.fn(),
+    getClassic: vi.fn(),
+    getClassicSettings: vi.fn(),
+    viaCloudConnector: false,
   } as unknown as NetworkClient;
 }
 
@@ -94,4 +109,32 @@ export function parseInputSchema(
     throw new Error(`Tool "${toolName}" has no schema`);
   }
   return z.object(config.schema as Record<string, z.ZodType>);
+}
+
+const page = (data: unknown[]) => ({ offset: 0, limit: 200, count: data.length, totalCount: data.length, data });
+const zone = (id: string, name: string, origin = "USER_DEFINED", networkIds: string[] = []) =>
+  ({ id, name, networkIds, metadata: { origin } });
+
+/** Firewall zones for the WAN-exposure checks: zone-external is the WAN. */
+export const ZONES = [
+  zone("zone-internal", "Internal", "SYSTEM_DEFINED", ["net-lan"]),
+  zone("zone-external", "External", "SYSTEM_DEFINED", ["net-wan"]),
+  zone("zone-gateway", "Gateway", "SYSTEM_DEFINED"),
+  ...["zone-iot", "zone-lan", "zone1", "zone2", "z1", "z2"].map((id) => zone(id, id)),
+];
+
+/**
+ * Answer the zone and policy listings the WAN-exposure checks read (paged
+ * GETs with an offset); every other GET resolves to other.
+ */
+export function answerWanLookups(
+  client: NetworkClient,
+  other?: unknown,
+  { zones = ZONES, policies = [] as unknown[] } = {}
+) {
+  mockFn(client, "get").mockImplementation((path: string) => {
+    if (path.includes("/firewall/zones?offset=")) return Promise.resolve(page(zones));
+    if (path.includes("/firewall/policies?offset=")) return Promise.resolve(page(policies));
+    return Promise.resolve(other);
+  });
 }

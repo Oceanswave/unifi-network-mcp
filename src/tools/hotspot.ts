@@ -9,12 +9,18 @@ import {
   DESTRUCTIVE,
   formatDryRun,
   requireConfirmation,
+  confirmDestructive,
+  requireConfirmationIf,
 } from "../utils/safety.js";
 import {
   listVouchersOutputSchema,
   voucherOutputSchema,
   createVouchersOutputSchema,
+  writeResult,
 } from "../utils/output-schemas.js";
+import { resourceId } from "../utils/params.js";
+
+const VOUCHER_BATCH_WITHOUT_CONFIRM = 10;
 
 export function registerHotspotTools(
   server: McpServer,
@@ -26,22 +32,22 @@ export function registerHotspotTools(
     {
       description: "List hotspot/guest-portal vouchers at a site. Returns: id, code, name, createdAt, activatedAt (when first guest used it), expiresAt, timeLimitMinutes, dataUsageLimitMBytes, rxRateLimitKbps, txRateLimitKbps, authorizedGuestLimit, authorizedGuestCount, expired. Use filter like 'expired.eq(true)' to bulk-find stale vouchers.",
       inputSchema: {
-        siteId: z.string().describe("Site ID"),
+        siteId: resourceId().describe("Site ID"),
         offset: z
           .number()
           .int()
           .nonnegative()
           .optional()
           .default(0)
-          .describe("Number of records to skip (default: 0)"),
+          .describe("Number of records to skip"),
         limit: z
           .number()
           .int()
           .min(0)
           .max(1000)
           .optional()
-          .default(100)
-          .describe("Number of records to return (default: 100, max: 1000)"),
+          .default(25)
+          .describe("Number of records to return"),
         filter: z
           .string()
           .optional()
@@ -68,8 +74,8 @@ export function registerHotspotTools(
     {
       description: "Get a specific hotspot voucher by ID (same fields as the list entry).",
       inputSchema: {
-        siteId: z.string().describe("Site ID"),
-        voucherId: z.string().describe("Voucher ID"),
+        siteId: resourceId().describe("Site ID"),
+        voucherId: resourceId().describe("Voucher ID"),
       },
       outputSchema: voucherOutputSchema,
       annotations: READ_ONLY,
@@ -91,9 +97,9 @@ export function registerHotspotTools(
   server.registerTool(
     "unifi_create_voucher",
     {
-      description: "Create one or more hotspot vouchers (use count for batch creation, up to 1000 at once). Returns: array of created vouchers with their generated codes. Idempotency: not safe to retry — each call mints fresh codes.",
+      description: `Create one or more hotspot vouchers (use count for batch creation; more than ${VOUCHER_BATCH_WITHOUT_CONFIRM} at once needs confirm: true). Returns: vouchers[] — the created vouchers with their generated codes. Idempotency: not safe to retry — each call mints fresh codes.`,
       inputSchema: {
-        siteId: z.string().describe("Site ID"),
+        siteId: resourceId().describe("Site ID"),
         name: z
           .string()
           .describe("Voucher note/name (duplicated across all generated vouchers)"),
@@ -138,12 +144,16 @@ export function registerHotspotTools(
           .max(100000)
           .optional()
           .describe("Upload rate limit in kbps (2-100000)"),
+        confirm: z
+          .boolean()
+          .optional()
+          .describe(`Set true to confirm creating more than ${VOUCHER_BATCH_WITHOUT_CONFIRM} vouchers at once; not needed with dryRun: true`),
         dryRun: z
           .boolean()
           .optional()
           .describe("Preview this action without executing it"),
       },
-      outputSchema: createVouchersOutputSchema,
+      outputSchema: writeResult(createVouchersOutputSchema),
       annotations: WRITE_NOT_IDEMPOTENT,
     },
     async ({
@@ -155,14 +165,20 @@ export function registerHotspotTools(
       dataUsageLimitMBytes,
       rxRateLimitKbps,
       txRateLimitKbps,
+      confirm,
       dryRun,
     }) => {
+      // Each voucher is a guest credential; a large batch is a lot of access
+      // to hand out on one unchecked call.
+      const opening = count > VOUCHER_BATCH_WITHOUT_CONFIRM ? `This creates ${count} guest access codes` : undefined;
+      const guard = requireConfirmationIf(opening, confirm, dryRun);
+      if (guard) return guard;
       try {
         const body: Record<string, unknown> = {
           name,
           timeLimitMinutes,
+          count,
         };
-        if (count !== undefined) body.count = count;
         if (authorizedGuestLimit !== undefined)
           body.authorizedGuestLimit = authorizedGuestLimit;
         if (dataUsageLimitMBytes !== undefined)
@@ -171,7 +187,7 @@ export function registerHotspotTools(
         if (txRateLimitKbps !== undefined) body.txRateLimitKbps = txRateLimitKbps;
 
         if (dryRun)
-          return formatDryRun("POST", `/sites/${siteId}/hotspot/vouchers`, body);
+          return formatDryRun("POST", `/sites/${siteId}/hotspot/vouchers`, body, opening);
         const data = await client.post(
           `/sites/${siteId}/hotspot/vouchers`,
           body
@@ -188,12 +204,9 @@ export function registerHotspotTools(
     {
       description: "DESTRUCTIVE: Delete a hotspot voucher. Returns: vouchersDeleted (count of vouchers removed).",
       inputSchema: {
-        siteId: z.string().describe("Site ID"),
-        voucherId: z.string().describe("Voucher ID"),
-        confirm: z
-          .boolean()
-          .optional()
-          .describe("Must be true to execute this destructive action"),
+        siteId: resourceId().describe("Site ID"),
+        voucherId: resourceId().describe("Voucher ID"),
+        confirm: confirmDestructive(),
         dryRun: z
           .boolean()
           .optional()
@@ -202,7 +215,7 @@ export function registerHotspotTools(
       annotations: DESTRUCTIVE,
     },
     async ({ siteId, voucherId, confirm, dryRun }) => {
-      const guard = requireConfirmation(confirm, "This will permanently delete the voucher");
+      const guard = dryRun ? null : requireConfirmation(confirm, "This will permanently delete the voucher");
       if (guard) return guard;
 
       try {
@@ -219,18 +232,17 @@ export function registerHotspotTools(
   server.registerTool(
     "unifi_bulk_delete_vouchers",
     {
-      description: "DESTRUCTIVE: Bulk delete hotspot vouchers based on filter criteria. Returns: vouchersDeleted (count of vouchers removed).",
+      description: "DESTRUCTIVE: Bulk delete hotspot vouchers matching a filter. The dry run shows only the request, not which vouchers match: call unifi_list_vouchers with the same filter first. Returns: vouchersDeleted (count of vouchers removed).",
       inputSchema: {
-        siteId: z.string().describe("Site ID"),
+        siteId: resourceId().describe("Site ID"),
         filter: z
           .string()
+          .trim()
+          .min(1)
           .describe(
-            "Required filter expression (e.g., 'expired.eq(true)', name.like('guest*'))"
+            "Required filter expression, e.g. expired.eq(true) or name.like('guest*')"
           ),
-        confirm: z
-          .boolean()
-          .optional()
-          .describe("Must be true to execute this destructive action"),
+        confirm: confirmDestructive(),
         dryRun: z
           .boolean()
           .optional()
@@ -240,7 +252,7 @@ export function registerHotspotTools(
     },
     async ({ siteId, filter, confirm, dryRun }) => {
       try {
-        const guard = requireConfirmation(
+        const guard = dryRun ? null : requireConfirmation(
           confirm,
           "This will delete all vouchers matching the filter"
         );

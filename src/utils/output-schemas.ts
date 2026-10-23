@@ -1,18 +1,23 @@
 /**
- * Output schemas for high-value read tools (loose strategy: every non-key
- * field optional, every nested object uses .passthrough() to allow
+ * Output schemas for every read tool, and for write tools whose response
+ * echoes the resource (loose strategy: every non-key
+ * field optional, every nested object uses .loose() to allow
  * firmware/hardware-specific fields to flow through unchanged).
  *
- * Verified against UniFi Network API 10.6.106. Where the docs collapse
+ * Verified against UniFi Network API 11.0.83. Where the docs collapse
  * nested arrays/objects (e.g. interfaces.ports[], radios[]), the schema
- * uses passthrough records so the contract doesn't lock to fields we
- * haven't verified.
+ * uses loose records so the contract doesn't lock to fields we
+ * haven't verified. Tools register these raw shapes, and registerAllTools()
+ * publishes each as a loose object (src/tools/index.ts), so fields a schema
+ * does not list never fail client-side validation.
  */
 import { z } from "zod";
 
+// configurable is live-verified (11.0.83) on system-defined zones, policies,
+// networks and RADIUS profiles; it is absent on user-defined resources.
 const Metadata = z
-  .object({ origin: z.string().optional() })
-  .passthrough();
+  .object({ origin: z.string().optional(), configurable: z.boolean().optional() })
+  .loose();
 
 const PaginationFields = {
   offset: z.number().int().optional(),
@@ -44,7 +49,7 @@ const DeviceListItem = z
     features: z.array(z.string()).optional(),
     interfaces: z.array(z.string()).optional(),
   })
-  .passthrough();
+  .loose();
 
 const DevicePort = z
   .object({
@@ -61,10 +66,10 @@ const DevicePort = z
         enabled: z.boolean().optional(),
         state: z.string().optional(),
       })
-      .passthrough()
+      .loose()
       .optional(),
   })
-  .passthrough();
+  .loose();
 
 const DeviceRadio = z
   .object({
@@ -73,7 +78,7 @@ const DeviceRadio = z
     channelWidthMHz: z.number().optional(),
     channel: z.number().optional(),
   })
-  .passthrough();
+  .loose();
 
 const DeviceDetail = z
   .object({
@@ -83,7 +88,7 @@ const DeviceDetail = z
     configurationId: z.string().optional(),
     uplink: z
       .object({ deviceId: z.string().optional() })
-      .passthrough()
+      .loose()
       .optional(),
     // Detail view: object keyed by capability (switching/accessPoint).
     features: z.record(z.string(), z.unknown()).optional(),
@@ -92,10 +97,10 @@ const DeviceDetail = z
         ports: z.array(DevicePort).optional(),
         radios: z.array(DeviceRadio).optional(),
       })
-      .passthrough()
+      .loose()
       .optional(),
   })
-  .passthrough();
+  .loose();
 
 const DeviceStatistics = z
   .object({
@@ -112,7 +117,7 @@ const DeviceStatistics = z
         txRateBps: z.number().optional(),
         rxRateBps: z.number().optional(),
       })
-      .passthrough()
+      .loose()
       .optional(),
     interfaces: z
       .object({
@@ -123,14 +128,14 @@ const DeviceStatistics = z
                 frequencyGHz: z.number().optional(),
                 txRetriesPct: z.number().optional(),
               })
-              .passthrough()
+              .loose()
           )
           .optional(),
       })
-      .passthrough()
+      .loose()
       .optional(),
   })
-  .passthrough();
+  .loose();
 
 const Client = z
   .object({
@@ -143,10 +148,10 @@ const Client = z
     uplinkDeviceId: z.string().optional(),
     access: z
       .object({ type: z.string().optional() })
-      .passthrough()
+      .loose()
       .optional(),
   })
-  .passthrough();
+  .loose();
 
 const WifiBroadcast = z
   .object({
@@ -166,14 +171,14 @@ const WifiBroadcast = z
     broadcastingDeviceFilter: z.unknown().optional(),
     metadata: Metadata.optional(),
   })
-  .passthrough();
+  .loose();
 
 const ApplicationInfo = z
   .object({
-    // Live-verified (10.6.106): only applicationVersion is returned.
+    // Live-verified (11.0.83): only applicationVersion is returned.
     applicationVersion: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 
 const Site = z
   .object({
@@ -181,7 +186,7 @@ const Site = z
     internalReference: z.string().optional(),
     name: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 
 const Network = z
   .object({
@@ -202,13 +207,13 @@ const Network = z
     ipv6Configuration: z.unknown().optional(),
     metadata: Metadata.optional(),
   })
-  .passthrough();
+  .loose();
 
 const NetworkReferences = z
   .object({
     referenceResources: z.array(z.unknown()).optional(),
   })
-  .passthrough();
+  .loose();
 
 const Voucher = z
   .object({
@@ -226,7 +231,7 @@ const Voucher = z
     authorizedGuestCount: z.number().optional(),
     expired: z.boolean().optional(),
   })
-  .passthrough();
+  .loose();
 
 const FirewallZone = z
   .object({
@@ -235,7 +240,7 @@ const FirewallZone = z
     networkIds: z.array(z.string()).optional(),
     metadata: Metadata.optional(),
   })
-  .passthrough();
+  .loose();
 
 const FirewallPolicy = z
   .object({
@@ -252,11 +257,13 @@ const FirewallPolicy = z
     ipsecFilter: z.unknown().optional(),
     schedule: z.unknown().optional(),
     loggingEnabled: z.boolean().optional(),
+    // New in 11.0.83; live-verified as a boolean on every policy.
+    reportFlowEnabled: z.boolean().optional(),
     index: z.number().optional(),
     description: z.string().optional(),
     metadata: Metadata.optional(),
   })
-  .passthrough();
+  .loose();
 
 const FirewallPolicyOrdering = z
   .object({
@@ -265,10 +272,10 @@ const FirewallPolicyOrdering = z
         beforeSystemDefined: z.array(z.string()).optional(),
         afterSystemDefined: z.array(z.string()).optional(),
       })
-      .passthrough()
+      .loose()
       .optional(),
   })
-  .passthrough();
+  .loose();
 
 const AclRule = z
   .object({
@@ -277,8 +284,11 @@ const AclRule = z
     name: z.string().optional(),
     enabled: z.boolean().optional(),
     action: z.string().optional(),
-    description: z.string().optional(),
-    protocolFilter: z.array(z.string()).optional(),
+    // The docs give null a meaning ("When null, the rule will be applied to
+    // all protocols") and ACL samples already carry explicit nulls, so both
+    // must accept null or a protocol-agnostic rule hard-fails with -32602.
+    description: z.string().nullable().optional(),
+    protocolFilter: z.array(z.string()).nullable().optional(),
     sourceFilter: z.unknown().optional(),
     destinationFilter: z.unknown().optional(),
     enforcingDeviceFilter: z.unknown().optional(),
@@ -287,13 +297,13 @@ const AclRule = z
     index: z.number().int().optional(),
     metadata: Metadata.optional(),
   })
-  .passthrough();
+  .loose();
 
 const AclRuleOrdering = z
   .object({
     orderedAclRuleIds: z.array(z.string()).optional(),
   })
-  .passthrough();
+  .loose();
 
 const SwitchStack = z
   .object({
@@ -309,7 +319,7 @@ const SwitchStack = z
     lags: z.array(z.unknown()).optional(),
     metadata: Metadata.optional(),
   })
-  .passthrough();
+  .loose();
 
 const McLagDomain = z
   .object({
@@ -319,7 +329,7 @@ const McLagDomain = z
     lags: z.array(z.unknown()).optional(),
     metadata: Metadata.optional(),
   })
-  .passthrough();
+  .loose();
 
 const Lag = z
   .object({
@@ -332,12 +342,12 @@ const Lag = z
             deviceId: z.string().optional(),
             portIdxs: z.array(z.number()).optional(),
           })
-          .passthrough()
+          .loose()
       )
       .optional(),
     metadata: Metadata.optional(),
   })
-  .passthrough();
+  .loose();
 
 const DnsPolicy = z
   .object({
@@ -347,9 +357,22 @@ const DnsPolicy = z
     domain: z.string().optional(),
     ipv4Address: z.string().optional(),
     ttlSeconds: z.number().optional(),
+    // Type-specific fields from the 11.0.83 response samples (no live DNS
+    // policies to sample), so nullable to be safe.
+    ipv6Address: z.string().nullable().optional(),
+    targetDomain: z.string().nullable().optional(),
+    mailServerDomain: z.string().nullable().optional(),
+    text: z.string().nullable().optional(),
+    serverDomain: z.string().nullable().optional(),
+    service: z.string().nullable().optional(),
+    protocol: z.string().nullable().optional(),
+    port: z.number().nullable().optional(),
+    priority: z.number().nullable().optional(),
+    weight: z.number().nullable().optional(),
+    ipAddress: z.string().nullable().optional(),
     metadata: Metadata.optional(),
   })
-  .passthrough();
+  .loose();
 
 const TrafficMatchingList = z
   .object({
@@ -359,16 +382,16 @@ const TrafficMatchingList = z
     items: z.array(z.unknown()).optional(),
     metadata: Metadata.optional(),
   })
-  .passthrough();
+  .loose();
 
-// Verified against the live Integration API (10.6.106). The WAN and
+// Verified against the live Integration API (11.0.83). The WAN and
 // site-to-site-tunnel list rows are intentionally minimal in the API.
 const Wan = z
   .object({
     id: z.string(),
     name: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 
 const VpnServer = z
   .object({
@@ -378,7 +401,7 @@ const VpnServer = z
     enabled: z.boolean().optional(),
     metadata: Metadata.optional(),
   })
-  .passthrough();
+  .loose();
 
 // No tunnels present in the verification environment — keep loose.
 const VpnTunnel = z
@@ -386,7 +409,7 @@ const VpnTunnel = z
     id: z.string(),
     name: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 
 const RadiusProfile = z
   .object({
@@ -394,7 +417,7 @@ const RadiusProfile = z
     name: z.string().optional(),
     metadata: Metadata.optional(),
   })
-  .passthrough();
+  .loose();
 
 // No tags present in the verification environment — documented shape.
 const DeviceTag = z
@@ -403,7 +426,7 @@ const DeviceTag = z
     name: z.string().optional(),
     deviceIds: z.array(z.string()).optional(),
   })
-  .passthrough();
+  .loose();
 
 // DPI category/application ids are NUMERIC (verified live).
 const DpiCategory = z
@@ -411,14 +434,14 @@ const DpiCategory = z
     id: z.number(),
     name: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 
 const DpiApplication = z
   .object({
     id: z.number(),
     name: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 
 // Countries key on `code` (ISO alpha-2), NOT `id` (verified live).
 const Country = z
@@ -426,7 +449,7 @@ const Country = z
     code: z.string(),
     name: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 
 // No pending devices in the verification environment — keep loose.
 const PendingDevice = z
@@ -436,7 +459,34 @@ const PendingDevice = z
     ipAddress: z.string().optional(),
     firmwareVersion: z.string().optional(),
   })
-  .passthrough();
+  .loose();
+
+// A write tool returns either the API's echo of the resource or, with dryRun,
+// a preview of the request it would send. The SDK validates both against the
+// one outputSchema, so the resource's key fields relax to optional alongside
+// the preview fields; read tools keep their stricter schemas.
+const DryRunPreview = {
+  dryRun: z.literal(true).optional(),
+  wouldExecute: z
+    .object({ method: z.string(), path: z.string(), body: z.unknown().optional() })
+    .loose()
+    .optional(),
+  confirmationRequired: z.string().optional(),
+} as const;
+
+/**
+ * The outputSchema to publish for a tool: always a loose object, whether the
+ * tool passed a raw shape or a Zod object (the SDK accepts both). Wrapping a
+ * Zod object in z.looseObject() would build a broken schema that makes
+ * tools/list throw for every tool.
+ */
+export function looseOutput(schema: z.ZodRawShape | z.ZodObject): z.ZodObject {
+  return schema instanceof z.ZodObject ? schema.loose() : z.looseObject(schema);
+}
+
+export function writeResult<T extends z.ZodRawShape>(shape: T) {
+  return { ...z.object(shape).partial().shape, ...DryRunPreview };
+}
 
 export const getInfoOutputSchema = ApplicationInfo.shape;
 
@@ -595,4 +645,140 @@ export const listCountriesOutputSchema = {
 export const listPendingDevicesOutputSchema = {
   ...PaginationFields,
   data: z.array(PendingDevice),
+} as const;
+
+// Controller history endpoints (v2 clients/history and stat/session) are not
+// part of the Integration API, so these follow the same loose strategy against
+// the controller's own response shape: only the identity fields are required.
+export const HistoryClient = z
+  .object({
+    mac: z.string(),
+    hostname: z.string().nullish(),
+    display_name: z.string().nullish(),
+    first_seen: z.number().optional(),
+    last_seen: z.number().optional(),
+    is_wired: z.boolean().optional(),
+    status: z.string().optional(),
+  })
+  .loose();
+
+export const ClientSession = z
+  .object({
+    _id: z.string(),
+    mac: z.string(),
+    assoc_time: z.number(),
+    duration: z.number().optional(),
+    rx_bytes: z.number().optional(),
+    tx_bytes: z.number().optional(),
+    hostname: z.string().nullish(),
+    is_wired: z.boolean().optional(),
+    roaming_sessions: z.array(z.unknown()).optional(),
+  })
+  .loose();
+
+/** Envelope returned by the controller's stat/session endpoint. */
+export const ClientSessionEnvelope = z.object({
+  meta: z.object({ rc: z.literal("ok") }).loose(),
+  data: z.array(ClientSession),
+});
+
+export const listClientHistoryOutputSchema = {
+  data: z.array(HistoryClient),
+  count: z.number(),
+  totalCount: z.number(),
+  limit: z.number(),
+  truncated: z.boolean(),
+  withinHours: z.number(),
+  coverage: z.string(),
+} as const;
+
+export const listClientSessionsOutputSchema = {
+  data: z.array(ClientSession),
+  count: z.number(),
+  limit: z.number(),
+  mayBeTruncated: z.boolean(),
+  start: z.number(),
+  end: z.number(),
+  coverage: z.string(),
+} as const;
+
+// Classic controller API reads (rest/portforward, get/setting). Unlike every
+// other schema here, each row shape is also the tool's output allowlist: the
+// tools copy only these fields from a record, so a field the controller adds
+// never reaches the model. Settings sections carry credentials (x_ssh_password,
+// x_mgmt_key, RADIUS secrets, cloud-access keys); never list one here. Field
+// types vary across controller versions, hence the unions.
+const classicScalar = z.union([z.string(), z.number()]).nullish();
+const classicString = z.string().nullish();
+const classicBoolean = z.boolean().nullish();
+
+/** Envelope of a classic REST collection; rows stay unknown until the allowlist is applied. */
+export const ClassicEnvelope = z.object({
+  meta: z.object({ rc: z.literal("ok") }).loose(),
+  data: z.array(z.record(z.string(), z.unknown())),
+});
+
+export const PortForwardDestination = z
+  .object({
+    destination_ip: classicString,
+    interface: classicString,
+  })
+  .loose();
+
+export const PortForward = z
+  .object({
+    _id: z.string(),
+    name: classicString,
+    enabled: classicBoolean,
+    pfwd_interface: classicString,
+    destination_ip: classicString,
+    destination_ips: z.array(PortForwardDestination).nullish(),
+    src: classicString,
+    src_limiting_enabled: classicBoolean,
+    src_limiting_type: classicString,
+    src_firewall_group_id: classicString,
+    dst_port: classicScalar,
+    fwd: classicString,
+    fwd_port: classicScalar,
+    proto: classicString,
+    log: classicBoolean,
+  })
+  .loose();
+
+export const listPortForwardsOutputSchema = {
+  data: z.array(PortForward),
+  count: z.number(),
+  enabledCount: z.number(),
+  siteReference: z.string(),
+} as const;
+
+const settingsStatus = z.enum(["available", "unavailable"]);
+
+export const getUpnpStatusOutputSchema = {
+  siteReference: z.string(),
+  status: settingsStatus,
+  source: z.string().nullable(),
+  upnp_enabled: z.boolean().nullable(),
+  upnp_nat_pmp_enabled: z.boolean().nullable(),
+  upnp_secure_mode: z.boolean().nullable(),
+  upnp_wan_interface: z.string().nullable(),
+  detail: z.string(),
+} as const;
+
+export const getRemoteAccessStatusOutputSchema = {
+  siteReference: z.string(),
+  remoteAccess: z.enum(["enabled", "unavailable"]),
+  connection: z.enum(["cloud-connector", "local"]),
+  networkCloudAccessEnabled: z.boolean().nullable(),
+  detail: z.string(),
+} as const;
+
+export const getManagementAccessOutputSchema = {
+  siteReference: z.string(),
+  status: settingsStatus,
+  x_ssh_enabled: z.boolean().nullable(),
+  x_ssh_auth_password_enabled: z.boolean().nullable(),
+  x_ssh_bind_wildcard: z.boolean().nullable(),
+  sshKeyCount: z.number().nullable(),
+  detail: z.string(),
 } as const;

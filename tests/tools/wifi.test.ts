@@ -2,6 +2,19 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { createMockServer, createMockClient, mockFn, parseInputSchema } from "./_helpers.js";
 import { registerWifiTools } from "../../src/tools/wifi.js";
 
+// Stand-in WiFi keys, referenced by name so secret scanners do not read the
+// fixtures as leaked passwords.
+const FIXTURE_KEYS = {
+  current: "fixture-current",
+  iot: "fixture-iot",
+  a: "fixture-a",
+  b: "fixture-b",
+  ppskA: "fixture-ppsk-a",
+  ppskB: "fixture-ppsk-b",
+  newB: "fixture-new-b",
+  created: "fixture-created",
+};
+
 describe("registerWifiTools", () => {
   let server: ReturnType<typeof createMockServer>["server"];
   let handlers: ReturnType<typeof createMockServer>["handlers"];
@@ -158,7 +171,86 @@ describe("registerWifiTools", () => {
     });
   });
 
+  describe("passphrase redaction", () => {
+    // PPSK shape captured live on 11.0.83 (values replaced).
+    const ppskSsid = {
+      type: "STANDARD",
+      id: "wifi1",
+      name: "Home",
+      securityConfiguration: {
+        type: "WPA2_PERSONAL",
+        presharedKeys: [
+          { network: { type: "SPECIFIC", networkId: "net-a" }, passphrase: FIXTURE_KEYS.ppskA },
+          { network: { type: "SPECIFIC", networkId: "net-b" }, passphrase: FIXTURE_KEYS.ppskB },
+        ],
+      },
+    };
+
+    beforeEach(() => {
+      registerWifiTools(server, client);
+    });
+
+    it("get_wifi redacts every passphrase by default", async () => {
+      mockFn(client, "get").mockResolvedValue(ppskSsid);
+
+      const result = await handlers.get("unifi_get_wifi")({ siteId: "site1", wifiBroadcastId: "wifi1" });
+
+      expect(result.content[0].text).not.toContain(FIXTURE_KEYS.ppskA);
+      expect(result.content[0].text).not.toContain(FIXTURE_KEYS.ppskB);
+      const keys = (result.structuredContent as typeof ppskSsid).securityConfiguration.presharedKeys;
+      expect(keys.map((k) => k.passphrase)).toEqual(["[REDACTED]", "[REDACTED]"]);
+      expect(keys[0].network).toEqual({ type: "SPECIFIC", networkId: "net-a" });
+    });
+
+    it("get_wifi returns plaintext passphrases when includeSecrets=true", async () => {
+      mockFn(client, "get").mockResolvedValue(ppskSsid);
+
+      const result = await handlers.get("unifi_get_wifi")({
+        siteId: "site1",
+        wifiBroadcastId: "wifi1",
+        includeSecrets: true,
+      });
+
+      expect(result.content[0].text).toContain(FIXTURE_KEYS.ppskA);
+    });
+
+    it("list_wifi redacts passphrases inside the paginated envelope", async () => {
+      mockFn(client, "get").mockResolvedValue({ offset: 0, limit: 25, count: 1, totalCount: 1, data: [ppskSsid] });
+
+      const result = await handlers.get("unifi_list_wifi")({ siteId: "site1" });
+
+      expect(result.content[0].text).not.toContain(FIXTURE_KEYS.ppskA);
+      expect(result.content[0].text).toContain("[REDACTED]");
+    });
+
+    it("does not mutate the API response object", async () => {
+      mockFn(client, "get").mockResolvedValue(ppskSsid);
+
+      await handlers.get("unifi_get_wifi")({ siteId: "site1", wifiBroadcastId: "wifi1" });
+
+      expect(ppskSsid.securityConfiguration.presharedKeys[0].passphrase).toBe(FIXTURE_KEYS.ppskA);
+    });
+  });
+
   describe("unifi_create_wifi", () => {
+    const standardCreate = {
+      siteId: "site1",
+      name: "Guest",
+      enabled: true,
+      type: "STANDARD",
+      broadcastingFrequenciesGHz: ["2.4", "5"],
+      securityConfiguration: {},
+      multicastToUnicastConversionEnabled: false,
+      clientIsolationEnabled: false,
+      hideName: false,
+      uapsdEnabled: false,
+      arpProxyEnabled: false,
+      bssTransitionEnabled: false,
+      advertiseDeviceName: false,
+      channel2gLockedTo6: false,
+      dtimPeriod2gLockedTo3: false,
+    };
+
     beforeEach(() => {
       registerWifiTools(server, client);
     });
@@ -304,6 +396,109 @@ describe("registerWifiTools", () => {
       expect(result.content[0].text).toContain("Create failed");
     });
 
+    it("should create an IOT_OPTIMIZED SSID without the STANDARD-only fields", async () => {
+      mockFn(client, "post").mockResolvedValue({ id: "wifi-iot" });
+
+      const result = await handlers.get("unifi_create_wifi")({
+        siteId: "site1",
+        name: "Things",
+        enabled: true,
+        type: "IOT_OPTIMIZED",
+        securityConfiguration: { type: "WPA2_PERSONAL", passphrase: FIXTURE_KEYS.iot },
+        multicastToUnicastConversionEnabled: false,
+        clientIsolationEnabled: true,
+        hideName: false,
+        uapsdEnabled: false,
+        channel2gLockedTo6: false,
+        dtimPeriod2gLockedTo3: false,
+      });
+
+      expect(result.isError).toBeUndefined();
+      const body = mockFn(client, "post").mock.calls[0][1];
+      expect(body).not.toHaveProperty("broadcastingFrequenciesGHz");
+      expect(body).not.toHaveProperty("arpProxyEnabled");
+      expect(body.securityConfiguration.passphrase).toBe(FIXTURE_KEYS.iot);
+    });
+
+    it("should reject STANDARD-only fields on an IOT_OPTIMIZED SSID", async () => {
+      const result = await handlers.get("unifi_create_wifi")({
+        siteId: "site1",
+        name: "Things",
+        enabled: true,
+        type: "IOT_OPTIMIZED",
+        securityConfiguration: {},
+        multicastToUnicastConversionEnabled: false,
+        clientIsolationEnabled: true,
+        hideName: false,
+        uapsdEnabled: false,
+        channel2gLockedTo6: false,
+        dtimPeriod2gLockedTo3: false,
+        arpProxyEnabled: true,
+        broadcastingFrequenciesGHz: ["2.4"],
+      });
+
+      expect(mockFn(client, "post")).not.toHaveBeenCalled();
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain(
+        "Fields not accepted for type IOT_OPTIMIZED: arpProxyEnabled, broadcastingFrequenciesGHz"
+      );
+    });
+
+    it("should require the STANDARD-only required fields for a STANDARD SSID", async () => {
+      const result = await handlers.get("unifi_create_wifi")({
+        siteId: "site1",
+        name: "Guest",
+        enabled: true,
+        type: "STANDARD",
+        securityConfiguration: {},
+        multicastToUnicastConversionEnabled: false,
+        clientIsolationEnabled: false,
+        hideName: false,
+        uapsdEnabled: false,
+        channel2gLockedTo6: false,
+        dtimPeriod2gLockedTo3: false,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain(
+        "Missing required fields for type STANDARD: broadcastingFrequenciesGHz, arpProxyEnabled, bssTransitionEnabled, advertiseDeviceName"
+      );
+    });
+
+    it("should accept numeric frequencies and de-duplicate them", async () => {
+      mockFn(client, "post").mockResolvedValue({ id: "wifi-new" });
+
+      await handlers.get("unifi_create_wifi")({
+        ...standardCreate,
+        broadcastingFrequenciesGHz: [5, "5", 2.4],
+      });
+
+      expect(mockFn(client, "post").mock.calls[0][1].broadcastingFrequenciesGHz).toEqual([5, 2.4]);
+    });
+
+    it("should reject a redaction placeholder instead of setting it as the passphrase", async () => {
+      const result = await handlers.get("unifi_create_wifi")({
+        ...standardCreate,
+        securityConfiguration: { type: "WPA2_PERSONAL", passphrase: "[REDACTED]" },
+      });
+
+      expect(mockFn(client, "post")).not.toHaveBeenCalled();
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("needs the real passphrase");
+    });
+
+    it("should redact the passphrase in the response echo and dryRun preview", async () => {
+      const secured = { ...standardCreate, securityConfiguration: { type: "WPA2_PERSONAL", passphrase: FIXTURE_KEYS.created } };
+      mockFn(client, "post").mockResolvedValue({ id: "wifi-new", securityConfiguration: secured.securityConfiguration });
+
+      const result = await handlers.get("unifi_create_wifi")(secured);
+      const preview = await handlers.get("unifi_create_wifi")({ ...secured, dryRun: true });
+
+      expect(mockFn(client, "post").mock.calls[0][1].securityConfiguration.passphrase).toBe(FIXTURE_KEYS.created);
+      expect(result.content[0].text).not.toContain(FIXTURE_KEYS.created);
+      expect(preview.content[0].text).not.toContain(FIXTURE_KEYS.created);
+    });
+
     it("should reject schema when channel2gLockedTo6 is missing", () => {
       const schema = parseInputSchema(configs, "unifi_create_wifi");
       const result = schema.safeParse({
@@ -389,8 +584,47 @@ describe("registerWifiTools", () => {
   });
 
   describe("unifi_update_wifi", () => {
+    // Shape captured live from an 11.0.83 STANDARD SSID (values replaced).
+    const currentSsid = {
+      type: "STANDARD",
+      id: "wifi1",
+      name: "Guest",
+      metadata: { origin: "USER_DEFINED" },
+      enabled: true,
+      network: { type: "SPECIFIC", networkId: "net-guest" },
+      securityConfiguration: {
+        type: "WPA2_WPA3_PERSONAL",
+        passphrase: FIXTURE_KEYS.current,
+        pmfMode: "OPTIONAL",
+        presharedKeys: [
+          { network: { type: "SPECIFIC", networkId: "net-a" }, passphrase: FIXTURE_KEYS.a },
+          { network: { type: "SPECIFIC", networkId: "net-b" }, passphrase: FIXTURE_KEYS.b },
+        ],
+      },
+      multicastToUnicastConversionEnabled: true,
+      clientIsolationEnabled: true,
+      hideName: false,
+      uapsdEnabled: true,
+      channel2gLockedTo6: false,
+      dtimPeriod2gLockedTo3: false,
+      broadcastingFrequenciesGHz: [5, 2.4],
+      hotspotConfiguration: { type: "CAPTIVE_PORTAL" },
+      bandSteeringEnabled: false,
+      arpProxyEnabled: false,
+      bssTransitionEnabled: true,
+      advertiseDeviceName: false,
+      handoffSuggestionsConfiguration: { band6GHzRssiThreshold: -80 },
+    };
+
+    // The documented PUT body: the GET response minus its read-only fields.
+    const currentBody = Object.fromEntries(
+      Object.entries(currentSsid).filter(([field]) => !["id", "metadata"].includes(field))
+    );
+    const path = "/sites/site1/wifi/broadcasts/wifi1";
+
     beforeEach(() => {
       registerWifiTools(server, client);
+      mockFn(client, "get").mockResolvedValue(currentSsid);
     });
 
     it("should register the tool", () => {
@@ -404,132 +638,137 @@ describe("registerWifiTools", () => {
       expect(config?.annotations.idempotentHint).toBe(true);
     });
 
-    it("should return success when client.put succeeds", async () => {
-      const mockData = { id: "wifi1", name: "Updated" };
-      mockFn(client, "put").mockResolvedValue(mockData);
+    it("should read the current SSID and PUT the merged full body", async () => {
+      mockFn(client, "put").mockResolvedValue({ ...currentSsid, name: "Visitors" });
 
-      const handler = handlers.get("unifi_update_wifi");
-      const result = await handler({
-        siteId: "site1",
-        wifiBroadcastId: "wifi1",
-        name: "Updated",
-      });
+      const result = await handlers.get("unifi_update_wifi")({ siteId: "site1", wifiBroadcastId: "wifi1", name: "Visitors" });
 
-      expect(mockFn(client, "put")).toHaveBeenCalledWith(
-        "/sites/site1/wifi/broadcasts/wifi1",
-        { name: "Updated" }
-      );
-      expect(result.content[0].text).toContain("Updated");
+      expect(mockFn(client, "get")).toHaveBeenCalledWith(path);
+      expect(mockFn(client, "put")).toHaveBeenCalledWith(path, { ...currentBody, name: "Visitors" });
       expect(result.isError).toBeUndefined();
     });
 
-    it("should only include defined properties in body", async () => {
-      mockFn(client, "put").mockResolvedValue({ id: "wifi1" });
+    it("should keep optional configs that would otherwise reset when omitted", async () => {
+      mockFn(client, "put").mockResolvedValue(currentSsid);
 
-      const handler = handlers.get("unifi_update_wifi");
-      await handler({
+      await handlers.get("unifi_update_wifi")({ siteId: "site1", wifiBroadcastId: "wifi1", hideName: true });
+
+      const body = mockFn(client, "put").mock.calls[0][1];
+      expect(body.handoffSuggestionsConfiguration).toEqual({ band6GHzRssiThreshold: -80 });
+      expect(body.hotspotConfiguration).toEqual({ type: "CAPTIVE_PORTAL" });
+      expect(body.hideName).toBe(true);
+      expect(body).not.toHaveProperty("id");
+      expect(body).not.toHaveProperty("metadata");
+    });
+
+    it("should send an explicit null to clear an optional config", async () => {
+      mockFn(client, "put").mockResolvedValue(currentSsid);
+
+      await handlers.get("unifi_update_wifi")({
+        siteId: "site1",
+        wifiBroadcastId: "wifi1",
+        handoffSuggestionsConfiguration: null,
+      });
+
+      expect(mockFn(client, "put").mock.calls[0][1].handoffSuggestionsConfiguration).toBeNull();
+    });
+
+    it("should keep the stored passphrases when the caller echoes back redacted values", async () => {
+      mockFn(client, "put").mockResolvedValue(currentSsid);
+
+      await handlers.get("unifi_update_wifi")({
+        siteId: "site1",
+        wifiBroadcastId: "wifi1",
+        securityConfiguration: {
+          type: "WPA2_WPA3_PERSONAL",
+          passphrase: "[REDACTED]",
+          pmfMode: "REQUIRED",
+          presharedKeys: [
+            { network: { type: "SPECIFIC", networkId: "net-a" }, passphrase: "[REDACTED]" },
+            { network: { type: "SPECIFIC", networkId: "net-b" }, passphrase: FIXTURE_KEYS.newB },
+          ],
+        },
+      });
+
+      const security = mockFn(client, "put").mock.calls[0][1].securityConfiguration;
+      expect(security.passphrase).toBe(FIXTURE_KEYS.current);
+      expect(security.pmfMode).toBe("REQUIRED");
+      expect(security.presharedKeys[0].passphrase).toBe(FIXTURE_KEYS.a);
+      expect(security.presharedKeys[1].passphrase).toBe(FIXTURE_KEYS.newB);
+    });
+
+    it("should refuse to restore a redacted PPSK key into a reordered entry", async () => {
+      const result = await handlers.get("unifi_update_wifi")({
+        siteId: "site1",
+        wifiBroadcastId: "wifi1",
+        securityConfiguration: {
+          type: "WPA2_WPA3_PERSONAL",
+          presharedKeys: [
+            { network: { type: "SPECIFIC", networkId: "net-b" }, passphrase: "[REDACTED]" },
+            { network: { type: "SPECIFIC", networkId: "net-a" }, passphrase: "[REDACTED]" },
+          ],
+        },
+      });
+
+      expect(mockFn(client, "put")).not.toHaveBeenCalled();
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("presharedKeys[0]");
+      expect(result.content[0].text).not.toContain(FIXTURE_KEYS.a);
+    });
+
+    it("should drop STANDARD-only fields when switching to IOT_OPTIMIZED", async () => {
+      mockFn(client, "put").mockResolvedValue(currentSsid);
+
+      await handlers.get("unifi_update_wifi")({ siteId: "site1", wifiBroadcastId: "wifi1", type: "IOT_OPTIMIZED" });
+
+      const body = mockFn(client, "put").mock.calls[0][1];
+      expect(body.type).toBe("IOT_OPTIMIZED");
+      for (const field of ["broadcastingFrequenciesGHz", "hotspotConfiguration", "arpProxyEnabled", "handoffSuggestionsConfiguration"]) {
+        expect(body).not.toHaveProperty(field);
+      }
+      expect(body.securityConfiguration.passphrase).toBe(FIXTURE_KEYS.current);
+    });
+
+    it("should reject STANDARD-only fields on an IOT_OPTIMIZED SSID", async () => {
+      mockFn(client, "get").mockResolvedValue({ ...currentSsid, type: "IOT_OPTIMIZED" });
+
+      const result = await handlers.get("unifi_update_wifi")({ siteId: "site1", wifiBroadcastId: "wifi1", mloEnabled: true });
+
+      expect(mockFn(client, "put")).not.toHaveBeenCalled();
+      expect(result.content[0].text).toContain("Fields not accepted for type IOT_OPTIMIZED: mloEnabled");
+    });
+
+    it("should return a redacted merged-body dryRun preview without writing", async () => {
+      const result = await handlers.get("unifi_update_wifi")({
         siteId: "site1",
         wifiBroadcastId: "wifi1",
         enabled: false,
-      });
-
-      expect(mockFn(client, "put")).toHaveBeenCalledWith(
-        "/sites/site1/wifi/broadcasts/wifi1",
-        { enabled: false }
-      );
-    });
-
-    it("should include both name and enabled when both are provided", async () => {
-      mockFn(client, "put").mockResolvedValue({ id: "wifi1" });
-
-      const handler = handlers.get("unifi_update_wifi");
-      await handler({
-        siteId: "site1",
-        wifiBroadcastId: "wifi1",
-        name: "New Name",
-        enabled: true,
-      });
-
-      expect(mockFn(client, "put")).toHaveBeenCalledWith(
-        "/sites/site1/wifi/broadcasts/wifi1",
-        { name: "New Name", enabled: true }
-      );
-    });
-
-    it("should return dryRun preview when dryRun=true", async () => {
-      const handler = handlers.get("unifi_update_wifi");
-      const result = await handler({
-        siteId: "site1",
-        wifiBroadcastId: "wifi1",
-        name: "Updated",
         dryRun: true,
       });
 
       expect(mockFn(client, "put")).not.toHaveBeenCalled();
-      expect(result.content[0].text).toContain("dryRun");
-      expect(result.content[0].text).toContain("PUT");
-      expect(result.content[0].text).toContain("/sites/site1/wifi/broadcasts/wifi1");
+      const preview = JSON.parse(result.content[0].text);
+      expect(preview.wouldExecute.method).toBe("PUT");
+      expect(preview.wouldExecute.body.enabled).toBe(false);
+      expect(preview.wouldExecute.body.securityConfiguration.passphrase).toBe("[REDACTED]");
+      expect(result.content[0].text).not.toContain(FIXTURE_KEYS.current);
     });
 
-    it("should return error when client fails", async () => {
-      const testError = new Error("Update failed");
-      mockFn(client, "put").mockRejectedValue(testError);
+    it("should redact passphrases in the response echo", async () => {
+      mockFn(client, "put").mockResolvedValue(currentSsid);
 
-      const handler = handlers.get("unifi_update_wifi");
-      const result = await handler({
-        siteId: "site1",
-        wifiBroadcastId: "wifi1",
-        name: "Updated",
-      });
+      const result = await handlers.get("unifi_update_wifi")({ siteId: "site1", wifiBroadcastId: "wifi1", name: "x" });
+
+      expect(result.content[0].text).not.toContain(FIXTURE_KEYS.current);
+    });
+
+    it("should return error when client.put fails", async () => {
+      mockFn(client, "put").mockRejectedValue(new Error("Update failed"));
+
+      const result = await handlers.get("unifi_update_wifi")({ siteId: "site1", wifiBroadcastId: "wifi1", name: "x" });
 
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain("Update failed");
-    });
-
-    it("should pass through v10.4.46 fields when provided", async () => {
-      mockFn(client, "put").mockResolvedValue({ id: "wifi1" });
-
-      const handler = handlers.get("unifi_update_wifi");
-      await handler({
-        siteId: "site1",
-        wifiBroadcastId: "wifi1",
-        channel2gLockedTo6: true,
-        dtimPeriod2gLockedTo3: true,
-        dnsAssistanceConfiguration: { mode: "auto" },
-        handoffSuggestionsConfiguration: {
-          band5GHzRssiThreshold: -75,
-          band6GHzRssiThreshold: -75,
-        },
-      });
-
-      expect(mockFn(client, "put")).toHaveBeenCalledWith(
-        "/sites/site1/wifi/broadcasts/wifi1",
-        {
-          channel2gLockedTo6: true,
-          dtimPeriod2gLockedTo3: true,
-          dnsAssistanceConfiguration: { mode: "auto" },
-          handoffSuggestionsConfiguration: {
-            band5GHzRssiThreshold: -75,
-            band6GHzRssiThreshold: -75,
-          },
-        }
-      );
-    });
-
-    it("should omit v10.4.46 fields when not provided", async () => {
-      mockFn(client, "put").mockResolvedValue({ id: "wifi1" });
-
-      const handler = handlers.get("unifi_update_wifi");
-      await handler({
-        siteId: "site1",
-        wifiBroadcastId: "wifi1",
-        name: "Updated",
-      });
-
-      expect(mockFn(client, "put")).toHaveBeenCalledWith(
-        "/sites/site1/wifi/broadcasts/wifi1",
-        { name: "Updated" }
-      );
     });
   });
 

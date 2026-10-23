@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { z } from "zod";
 import {
+  looseOutput,
   getDeviceOutputSchema,
   getDeviceStatisticsOutputSchema,
   listDevicesOutputSchema,
@@ -17,6 +18,7 @@ import {
   listWansOutputSchema,
   listVpnServersOutputSchema,
   switchStackOutputSchema,
+  dnsPolicyOutputSchema,
 } from "../../src/utils/output-schemas.js";
 
 /**
@@ -267,5 +269,93 @@ describe("output schemas", () => {
     expect(() =>
       z.object(aclRuleOutputSchema).parse({ id: "a1", index: 0 })
     ).not.toThrow();
+  });
+
+  it("firewall policy accepts live 11.0.83 rows and keeps reportFlowEnabled", () => {
+    // Captured live on 11.0.83 (ids shortened): a predefined system policy
+    // and a user-defined one. reportFlowEnabled is new in 11.0.83.
+    const predefined = {
+      id: "cb97cf8e",
+      enabled: true,
+      name: "Allow Return Traffic",
+      index: 30000,
+      action: { type: "ALLOW", allowReturnTraffic: true },
+      source: { zoneId: "z-external" },
+      destination: { zoneId: "z-internal" },
+      ipProtocolScope: { ipVersion: "IPV4_AND_IPV6" },
+      connectionStateFilter: ["RELATED", "ESTABLISHED"],
+      loggingEnabled: false,
+      reportFlowEnabled: false,
+      metadata: { origin: "SYSTEM_DEFINED", configurable: true },
+    };
+    const userDefined = {
+      id: "0702a0d8",
+      enabled: true,
+      name: "Allow DNS out",
+      description: "",
+      index: 10000,
+      action: { type: "ALLOW", allowReturnTraffic: false },
+      source: { zoneId: "z-internal" },
+      destination: {
+        zoneId: "z-external",
+        trafficFilter: {
+          type: "IP_ADDRESS",
+          ipAddressFilter: { type: "IP_ADDRESSES", matchOpposite: false, items: [{ type: "SUBNET", value: "192.0.2.0/24" }] },
+          portFilter: { type: "TRAFFIC_MATCHING_LIST", matchOpposite: false, trafficMatchingListId: "tml-1" },
+        },
+      },
+      ipProtocolScope: { ipVersion: "IPV4_AND_IPV6", protocolFilter: { type: "PRESET", preset: { name: "TCP_UDP" } } },
+      loggingEnabled: false,
+      reportFlowEnabled: true,
+      metadata: { origin: "USER_DEFINED" },
+    };
+    const schema = z.object(firewallPolicyOutputSchema);
+    expect(schema.parse(predefined).reportFlowEnabled).toBe(false);
+    expect(schema.parse(userDefined).reportFlowEnabled).toBe(true);
+  });
+
+  it("acl rule accepts explicit nulls, which the docs use to mean 'all protocols'", () => {
+    // Regression guard: protocolFilter was z.array(z.string()).optional(),
+    // so a protocol-agnostic rule returned with null hard-failed with -32602.
+    expect(() =>
+      z.object(aclRuleOutputSchema).parse({
+        id: "a1",
+        type: "IPV4",
+        name: "Block cameras",
+        enabled: true,
+        action: "BLOCK",
+        description: null,
+        protocolFilter: null,
+        sourceFilter: null,
+        destinationFilter: null,
+        enforcingDeviceFilter: null,
+      })
+    ).not.toThrow();
+  });
+
+  it("dns policy accepts every record type's fields (11.0.83 response samples)", () => {
+    const schema = z.object(dnsPolicyOutputSchema);
+    for (const sample of [
+      { id: "d1", type: "AAAA_RECORD", domain: "example.com", ipv6Address: "cafe::babe", ttlSeconds: 14400 },
+      { id: "d2", type: "CNAME_RECORD", domain: "example.com", targetDomain: "target.example.com", ttlSeconds: 14400 },
+      { id: "d3", type: "MX_RECORD", domain: "example.com", mailServerDomain: "mail.example.com", priority: 255 },
+      { id: "d4", type: "TXT_RECORD", domain: "example.com", text: "example" },
+      { id: "d5", type: "SRV_RECORD", domain: "example.com", serverDomain: "s.example.com", service: "_ldap", protocol: "_tcp", port: 65535, priority: 255, weight: 255 },
+      { id: "d6", type: "FORWARD_DOMAIN", domain: "example.com", ipAddress: "8.8.4.4" },
+    ]) {
+      expect(() => schema.parse(sample)).not.toThrow();
+    }
+  });
+});
+
+describe("looseOutput", () => {
+  // Published JSON Schema is what SDK clients validate against.
+  it.each([
+    ["a raw shape", { id: z.string() }],
+    ["a Zod object", z.object({ id: z.string() })],
+  ])("publishes %s without forbidding extra properties", (_label, schema) => {
+    const published = z.toJSONSchema(looseOutput(schema)) as { additionalProperties?: unknown; properties?: object };
+    expect(published.additionalProperties).not.toBe(false);
+    expect(published.properties).toHaveProperty("id");
   });
 });

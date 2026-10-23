@@ -6,8 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+# Read-only token for every job; none of them writes to the repo.
+permissions:
+  contents: read
+
+# A push to main gets its own group per commit: GitHub keeps only one pending
+# run per group, so during a burst of merges a shared group would cancel the
+# CI run - and with it the release run - of a commit that should be released.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -17,11 +24,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # One step: pnpm from `packageManager`, Node auto-detected from .nvmrc,
       # the pnpm store cache, and a frozen install.
-      - uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
+      - uses: pnpm/setup@a0881977cd8ea73b1ed212236c99ca10dcc80cf4 # v3.1.1
         with:
           cache: true
           require-lockfile: true
       - run: pnpm audit --prod --audit-level=high
+      # Dev dependencies build what gets published, so audit them too.
+      - run: pnpm audit --audit-level=critical
       - run: pnpm run typecheck
       - run: pnpm run lint
       - run: pnpm run build
@@ -36,7 +45,7 @@ jobs:
           - '24.22.1' # renovate: datasource=node-version depName=node-lts-24 packageName=node
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
+      - uses: pnpm/setup@a0881977cd8ea73b1ed212236c99ca10dcc80cf4 # v3.1.1
         with:
           runtime: node@${{ matrix.node-version }}
           cache: true
@@ -44,25 +53,38 @@ jobs:
       - run: pnpm run build
       - run: pnpm test
 
+  # Pack the package as npm would publish it, install the tarball into an
+  # empty project and check the installed binary serves tools over stdio.
+  package:
+    needs: lint
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/setup@a0881977cd8ea73b1ed212236c99ca10dcc80cf4 # v3.1.1
+        with:
+          cache: true
+          require-lockfile: true
+      - run: pnpm run test:package
+
   # Aggregator with a stable name so branch rulesets can require a single `test`
   # check regardless of how the matrix dimensions change.
   test:
-    needs: test-matrix
+    needs: [test-matrix, package]
     if: always()
     runs-on: ubuntu-26.04
     steps:
-      - name: Verify matrix succeeded
+      - name: Verify matrix and package succeeded
         env:
           MATRIX_RESULT: ${{ needs.test-matrix.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
         run: |
-          if [ "$MATRIX_RESULT" != "success" ]; then
-            echo "test-matrix did not succeed: $MATRIX_RESULT"
+          if [ "$MATRIX_RESULT" != "success" ] || [ "$PACKAGE_RESULT" != "success" ]; then
+            echo "test-matrix: $MATRIX_RESULT, package: $PACKAGE_RESULT"
             exit 1
           fi
 
   security:
-    # Skip on Renovate runs — Renovate runs its own vulnerability checks
-    if: github.actor != 'renovate[bot]'
+    # Runs on Renovate PRs too: they are the ones that automerge.
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
@@ -79,9 +101,9 @@ jobs:
           # the FIRST document of pnpm v12's multi-document pnpm-lock.yaml.
           # Document 1 holds packageManagerDependencies (pnpm's own binaries);
           # the real dependency tree lives in document 2. This repo is on
-          # pnpm@12.4.1, so the scan inspected zero packages and exited 0 --
+          # pnpm v12, so the scan inspected zero packages and exited 0 --
           # green because nothing was looked at, not because nothing was
           # vulnerable ("Supported files for scanner(s) not found" in run
           # 35399411224). v0.74.0 reads both documents. Remove this pin once a
           # trivy-action release ships v0.74.0+ as its default.
-          version: v0.74.0
+          version: v0.76.0

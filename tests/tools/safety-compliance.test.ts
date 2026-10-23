@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { createMockServer, createMockClient } from "./_helpers.js";
+import { z } from "zod";
+import { createMockServer, createMockClient, mockFn, answerWanLookups, ZONES } from "./_helpers.js";
 import { registerAllTools } from "../../src/tools/index.js";
 
 /**
@@ -60,13 +61,13 @@ describe("safety compliance", () => {
     expect(destructiveTools.length).toBeGreaterThan(0);
   });
 
-  it("should register exactly 74 tools in read+write mode", () => {
-    expect(allTools.length).toBe(74);
+  it("should register exactly 80 tools in read+write mode", () => {
+    expect(allTools.length).toBe(80);
   });
 
-  it("should register exactly 41 tools in read-only mode", () => {
+  it("should register exactly 47 tools in read-only mode", () => {
     const readOnlyModeTools = collectTools(true);
-    expect(readOnlyModeTools.length).toBe(41);
+    expect(readOnlyModeTools.length).toBe(47);
   });
 
   // ── Read-only tools: no safety guards ──────────────────────────────
@@ -157,5 +158,67 @@ describe("safety compliance", () => {
       const expectedNames = readOnlyTools.map((t) => t.name).sort();
       expect(readOnlyNames).toEqual(expectedNames);
     });
+  });
+});
+
+describe("dry-run on destructive tools", () => {
+  const { server: mockServer, handlers, configs } = createMockServer();
+  const mockClient = createMockClient();
+  registerAllTools(mockServer, mockClient, false);
+  // Deleting a zone first checks it is not the WAN zone; id1 is a custom one.
+  answerWanLookups(mockClient, undefined, { zones: [...ZONES, { id: "id1", name: "Custom", networkIds: [], metadata: { origin: "USER_DEFINED" } }] });
+  // Only destructive tools always need confirm; others ask for it only when
+  // a particular change opens access (tests/tools/security-confirm.test.ts).
+  const destructive = [...configs].filter(([, config]) => config.annotations.destructiveHint === true);
+
+  // Fill every required input with an ID-shaped string; the tools that take
+  // confirm need nothing else.
+  const minimalInput = (schema: Record<string, unknown>) => Object.fromEntries(
+    Object.entries(schema as Record<string, z.ZodType>)
+      .filter(([, field]) => !field.safeParse(undefined).success)
+      .map(([key]) => [key, key === "filter" ? "expired.eq(true)" : "id1"])
+  );
+
+  it("finds the destructive tools", () => {
+    expect(destructive.length).toBeGreaterThanOrEqual(9);
+  });
+
+  for (const [name, config] of destructive) {
+    it(`${name} previews without confirm, since a preview changes nothing`, async () => {
+      const result = await handlers.get(name)({ ...minimalInput(config.schema), dryRun: true });
+      expect(result.isError).toBeUndefined();
+      expect(result.structuredContent).toMatchObject({ dryRun: true });
+      for (const method of ["post", "put", "patch", "delete"] as const) {
+        expect(mockFn(mockClient, method)).not.toHaveBeenCalled();
+      }
+    });
+
+    it(`${name} still requires confirm to execute`, async () => {
+      const result = await handlers.get(name)(minimalInput(config.schema));
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("confirmation");
+    });
+  }
+});
+
+describe("read-only mode, by behaviour", () => {
+  // Annotations can be wrong; what matters is that nothing registered in
+  // read-only mode can send anything but a read to the controller.
+  it("registers no handler that sends a non-GET request", async () => {
+    const { server: mockServer, handlers, configs } = createMockServer();
+    const mockClient = createMockClient();
+    registerAllTools(mockServer, mockClient, true);
+    for (const [name, handler] of handlers) {
+      const schema = configs.get(name).schema as Record<string, z.ZodType>;
+      const input = Object.fromEntries(
+        Object.entries(schema)
+          .filter(([, field]) => !field.safeParse(undefined).success)
+          .map(([key, field]) => [key, field.safeParse("id1").success ? "id1" : 1])
+      );
+      await handler(input, {});
+    }
+    for (const method of ["post", "put", "patch", "delete"] as const) {
+      expect(mockFn(mockClient, method)).not.toHaveBeenCalled();
+    }
   });
 });

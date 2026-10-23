@@ -33,7 +33,7 @@ describe("registerDeviceTools", () => {
           "/sites/site1/devices?offset=0&limit=25"
         );
         expect(result.content).toEqual([
-          { type: "text", text: JSON.stringify(mockData, null, 2) },
+          { type: "text", text: JSON.stringify(mockData) },
         ]);
         expect(result.structuredContent).toEqual(mockData);
       });
@@ -89,7 +89,7 @@ describe("registerDeviceTools", () => {
           "/sites/site1/devices/dev1"
         );
         expect(result.content).toEqual([
-          { type: "text", text: JSON.stringify(mockData, null, 2) },
+          { type: "text", text: JSON.stringify(mockData) },
         ]);
         expect(result.structuredContent).toEqual(mockData);
       });
@@ -132,7 +132,7 @@ describe("registerDeviceTools", () => {
           "/sites/site1/devices/dev1/statistics/latest"
         );
         expect(result.content).toEqual([
-          { type: "text", text: JSON.stringify(mockData, null, 2) },
+          { type: "text", text: JSON.stringify(mockData) },
         ]);
         expect(result.structuredContent).toEqual(mockData);
       });
@@ -177,7 +177,7 @@ describe("registerDeviceTools", () => {
           "/pending-devices?offset=0&limit=25"
         );
         expect(result.content).toEqual([
-          { type: "text", text: JSON.stringify(mockData, null, 2) },
+          { type: "text", text: JSON.stringify(mockData) },
         ]);
         expect(result.structuredContent).toEqual(mockData);
       });
@@ -261,7 +261,7 @@ describe("registerDeviceTools", () => {
           }
         );
         expect(result.content).toEqual([
-          { type: "text", text: JSON.stringify(mockData, null, 2) },
+          { type: "text", text: JSON.stringify(mockData) },
         ]);
         expect(result.structuredContent).toEqual(mockData);
       });
@@ -324,7 +324,7 @@ describe("registerDeviceTools", () => {
           }
         );
         expect(result.content).toEqual([
-          { type: "text", text: JSON.stringify(mockData, null, 2) },
+          { type: "text", text: JSON.stringify(mockData) },
         ]);
         expect(result.structuredContent).toEqual(mockData);
       });
@@ -353,7 +353,7 @@ describe("registerDeviceTools", () => {
           content: [
             {
               type: "text",
-              text: JSON.stringify(mockData, null, 2),
+              text: JSON.stringify(mockData),
             },
           ],
         });
@@ -450,7 +450,7 @@ describe("registerDeviceTools", () => {
           content: [
             {
               type: "text",
-              text: JSON.stringify(mockData, null, 2),
+              text: JSON.stringify(mockData),
             },
           ],
         });
@@ -472,11 +472,11 @@ describe("registerDeviceTools", () => {
         });
       });
 
-      it("should have WRITE annotations", () => {
+      it("should have WRITE_NOT_IDEMPOTENT annotations (each call re-triggers the action)", () => {
         const config = server.configs.get("unifi_restart_device");
         expect(config?.annotations.readOnlyHint).toBe(false);
         expect(config?.annotations.destructiveHint).toBe(false);
-        expect(config?.annotations.idempotentHint).toBe(true);
+        expect(config?.annotations.idempotentHint).toBe(false);
       });
 
       it("should preview action when dryRun=true", async () => {
@@ -521,7 +521,7 @@ describe("registerDeviceTools", () => {
           content: [
             {
               type: "text",
-              text: JSON.stringify(mockData, null, 2),
+              text: JSON.stringify(mockData),
             },
           ],
         });
@@ -544,11 +544,11 @@ describe("registerDeviceTools", () => {
         });
       });
 
-      it("should have WRITE annotations", () => {
+      it("should have WRITE_NOT_IDEMPOTENT annotations (each call re-triggers the action)", () => {
         const config = server.configs.get("unifi_power_cycle_port");
         expect(config?.annotations.readOnlyHint).toBe(false);
         expect(config?.annotations.destructiveHint).toBe(false);
-        expect(config?.annotations.idempotentHint).toBe(true);
+        expect(config?.annotations.idempotentHint).toBe(false);
       });
 
       it("should preview action when dryRun=true", async () => {
