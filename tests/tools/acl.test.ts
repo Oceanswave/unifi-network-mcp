@@ -177,6 +177,7 @@ describe("registerAclTools", () => {
           name: "Allow HTTP",
           enabled: true,
           action: "ALLOW",
+          confirm: true,
           description: "Allow HTTP traffic",
           protocolFilter: ["TCP"],
         });
@@ -207,6 +208,7 @@ describe("registerAclTools", () => {
           name: "Allow HTTP",
           enabled: true,
           action: "ALLOW",
+          confirm: true,
         });
 
         const callArgs = mockFn(client, "post").mock.calls[0];
@@ -270,7 +272,7 @@ describe("registerAclTools", () => {
         expect(mockFn(client, "post")).not.toHaveBeenCalled();
         expect(result.content).toBeDefined();
         const text = result.content[0].text;
-        expect(text).toContain('"dryRun": true');
+        expect(text).toContain('"dryRun":true');
         expect(text).toContain("POST");
         expect(text).toContain("/sites/site123/acl-rules");
       });
@@ -338,69 +340,102 @@ describe("registerAclTools", () => {
         expect(config?.annotations.idempotentHint).toBe(true);
       });
 
-      it("should return success when client.put succeeds", async () => {
-        const mockData = { id: "rule1", name: "Allow SSH Updated" };
-        mockFn(client, "put").mockResolvedValue(mockData);
+      const currentRule = {
+        id: "rule1",
+        index: 3,
+        metadata: { origin: "USER_DEFINED" },
+        type: "IPV4",
+        name: "Block cameras",
+        enabled: true,
+        action: "BLOCK",
+        description: "Cameras may not reach the LAN",
+        protocolFilter: ["TCP"],
+        sourceFilter: { type: "IP_ADDRESSES_OR_SUBNETS", ipAddressesOrSubnets: ["10.0.50.0/24"] },
+        destinationFilter: { type: "IP_ADDRESSES_OR_SUBNETS", ipAddressesOrSubnets: ["10.0.1.0/24"] },
+        enforcingDeviceFilter: { type: "DEVICES", deviceIds: ["sw1"] },
+      };
+      // What the PUT body should carry: everything but the read-only id/index/metadata.
+      const currentBody = Object.fromEntries(
+        Object.entries(currentRule).filter(([key]) => !["id", "index", "metadata"].includes(key))
+      );
+
+      it("keeps every current field when only the name changes", async () => {
+        mockFn(client, "get").mockResolvedValue(currentRule);
+        mockFn(client, "put").mockResolvedValue({ ...currentRule, name: "Renamed" });
 
         const handler = handlers.get("unifi_update_acl_rule");
-        const result = await handler({
-          siteId: "site123",
-          aclRuleId: "rule1",
-          type: "IPV4",
-          name: "Allow SSH Updated",
-          enabled: true,
-          action: "ALLOW",
-          description: "Updated SSH rule",
-        });
+        const result = await handler({ siteId: "site123", aclRuleId: "rule1", name: "Renamed" });
 
+        expect(mockFn(client, "get")).toHaveBeenCalledWith("/sites/site123/acl-rules/rule1");
         expect(mockFn(client, "put")).toHaveBeenCalledWith(
           "/sites/site123/acl-rules/rule1",
-          {
-            type: "IPV4",
-            name: "Allow SSH Updated",
-            enabled: true,
-            action: "ALLOW",
-            description: "Updated SSH rule",
-          }
+          { ...currentBody, name: "Renamed" }
         );
-        expect(result.content).toBeDefined();
         expect(result.isError).toBeUndefined();
       });
 
-      it("should return error when client.put fails", async () => {
-        const testError = new Error("Rule not found");
-        mockFn(client, "put").mockRejectedValue(testError);
+      it("sends null to clear an optional filter", async () => {
+        mockFn(client, "get").mockResolvedValue(currentRule);
+        mockFn(client, "put").mockResolvedValue(currentRule);
 
         const handler = handlers.get("unifi_update_acl_rule");
-        const result = await handler({
-          siteId: "site123",
-          aclRuleId: "rule1",
-          type: "IPV4",
-          name: "Updated",
-          enabled: true,
-          action: "ALLOW",
+        // null means all protocols: a change to what the rule matches.
+        await handler({ siteId: "site123", aclRuleId: "rule1", protocolFilter: null, confirm: true });
+
+        expect(mockFn(client, "put").mock.calls[0][1]).toEqual({ ...currentBody, protocolFilter: null });
+      });
+
+      it("drops the old type's filters when the type changes", async () => {
+        mockFn(client, "get").mockResolvedValue(currentRule);
+        mockFn(client, "put").mockResolvedValue(currentRule);
+        const macSource = { type: "MAC_ADDRESSES", macAddresses: ["aa:bb:cc:dd:ee:ff"] };
+
+        await handlers.get("unifi_update_acl_rule")({
+          siteId: "site123", aclRuleId: "rule1", type: "MAC", sourceFilter: macSource, confirm: true,
         });
+
+        // The IPV4 destination and protocol filters do not carry over into a MAC rule.
+        const typeAgnostic = Object.fromEntries(Object.entries(currentBody)
+          .filter(([key]) => !["protocolFilter", "sourceFilter", "destinationFilter"].includes(key)));
+        expect(mockFn(client, "put").mock.calls[0][1]).toEqual({ ...typeAgnostic, type: "MAC", sourceFilter: macSource });
+      });
+
+      it("keeps the filters when the type is restated unchanged", async () => {
+        mockFn(client, "get").mockResolvedValue(currentRule);
+        mockFn(client, "put").mockResolvedValue(currentRule);
+
+        await handlers.get("unifi_update_acl_rule")({ siteId: "site123", aclRuleId: "rule1", type: "IPV4", name: "Renamed" });
+
+        expect(mockFn(client, "put").mock.calls[0][1]).toEqual({ ...currentBody, name: "Renamed" });
+      });
+
+      it("accepts a partial update and a null filter via schema", () => {
+        const schema = parseInputSchema(configs, "unifi_update_acl_rule");
+        expect(schema.safeParse({ siteId: "site1", aclRuleId: "rule1", name: "x", protocolFilter: null }).success).toBe(true);
+      });
+
+      it("should return error when client.put fails", async () => {
+        mockFn(client, "get").mockResolvedValue(currentRule);
+        mockFn(client, "put").mockRejectedValue(new Error("Rule not found"));
+
+        const handler = handlers.get("unifi_update_acl_rule");
+        const result = await handler({ siteId: "site123", aclRuleId: "rule1", name: "Updated" });
 
         expect(result.isError).toBe(true);
       });
 
-      it("should return dry run preview when dryRun=true", async () => {
+      it("previews the merged body when dryRun=true", async () => {
+        mockFn(client, "get").mockResolvedValue(currentRule);
+
         const handler = handlers.get("unifi_update_acl_rule");
-        const result = await handler({
-          siteId: "site123",
-          aclRuleId: "rule1",
-          type: "IPV4",
-          name: "Allow SSH Updated",
-          enabled: true,
-          action: "ALLOW",
-          dryRun: true,
-        });
+        const result = await handler({ siteId: "site123", aclRuleId: "rule1", enabled: false, dryRun: true });
 
         expect(mockFn(client, "put")).not.toHaveBeenCalled();
-        expect(result.content).toBeDefined();
-        const text = result.content[0].text;
-        expect(text).toContain('"dryRun": true');
-        expect(text).toContain("PUT");
+        expect(result.structuredContent).toEqual({
+          dryRun: true,
+          wouldExecute: { method: "PUT", path: "/sites/site123/acl-rules/rule1", body: { ...currentBody, enabled: false } },
+          confirmationRequired: "This disables an ACL rule that blocks traffic",
+        });
       });
 
       it("should reject invalid type via schema", () => {
@@ -500,7 +535,7 @@ describe("registerAclTools", () => {
         expect(mockFn(client, "delete")).not.toHaveBeenCalled();
         expect(result.content).toBeDefined();
         const text = result.content[0].text;
-        expect(text).toContain('"dryRun": true');
+        expect(text).toContain('"dryRun":true');
         expect(text).toContain("DELETE");
       });
 
@@ -543,6 +578,8 @@ describe("registerAclTools", () => {
       it("should return success when client.put succeeds", async () => {
         const mockData = { success: true };
         mockFn(client, "put").mockResolvedValue(mockData);
+        // The current order, read to judge the reorder: the same rules, rotated.
+        mockFn(client, "get").mockResolvedValue({ orderedAclRuleIds: ["rule3", "rule1", "rule2"] });
 
         const handler = handlers.get("unifi_reorder_acl_rules");
         const orderedIds = ["rule1", "rule2", "rule3"];
@@ -573,6 +610,7 @@ describe("registerAclTools", () => {
       });
 
       it("should return dry run preview when dryRun=true", async () => {
+        mockFn(client, "get").mockResolvedValue({ orderedAclRuleIds: ["rule1", "rule2", "rule3"] });
         const handler = handlers.get("unifi_reorder_acl_rules");
         const orderedIds = ["rule1", "rule2", "rule3"];
         const result = await handler({
@@ -584,7 +622,7 @@ describe("registerAclTools", () => {
         expect(mockFn(client, "put")).not.toHaveBeenCalled();
         expect(result.content).toBeDefined();
         const text = result.content[0].text;
-        expect(text).toContain('"dryRun": true');
+        expect(text).toContain('"dryRun":true');
         expect(text).toContain("PUT");
         expect(text).toContain("/sites/site123/acl-rules/ordering");
       });

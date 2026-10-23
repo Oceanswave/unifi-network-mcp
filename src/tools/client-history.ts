@@ -1,0 +1,71 @@
+import { z } from "zod";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { NetworkClient } from "../client.js";
+import { formatSuccess, formatError } from "../utils/responses.js";
+import { READ_ONLY } from "../utils/safety.js";
+import {
+  HistoryClient,
+  ClientSession,
+  ClientSessionEnvelope,
+  listClientHistoryOutputSchema,
+  listClientSessionsOutputSchema,
+} from "../utils/output-schemas.js";
+
+const siteReference = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/)
+  .describe("Site internalReference from unifi_list_sites (often default), not the Integration API UUID");
+
+export function registerClientHistoryTools(server: McpServer, client: NetworkClient) {
+  server.registerTool("unifi_list_client_history", {
+    description: `List historical/offline client inventory using the controller v2 API. Returns OFFLINE clients only — currently connected clients are excluded, so merge with unifi_list_clients for a full inventory. Includes names, MACs, first_seen and last_seen epoch seconds when available. This is inventory, not session history; use unifi_list_client_sessions for past connections. Requires controller history API-key support; errors never mean zero activity. Retention depends on the controller. Returns the most recently seen clients first, up to limit, with totalCount; truncated: true means less recently seen clients were left out, so raise limit (narrowing withinHours drops those same clients). Rows carry only ${Object.keys(HistoryClient.shape).join(", ")}.`,
+    inputSchema: {
+      siteReference,
+      withinHours: z.number().int().min(1).max(8760).default(168).describe("Lookback in hours, up to one year; does not extend controller retention"),
+      limit: z.number().int().min(1).max(500).default(100).describe("Maximum clients, most recently seen first"),
+    },
+    outputSchema: listClientHistoryOutputSchema,
+    annotations: READ_ONLY,
+  }, async ({ siteReference, withinHours, limit }) => {
+    try {
+      // The controller returns every client in the window with no paging, so
+      // bound the result here: an unbounded inventory can run to megabytes.
+      const all = z.array(HistoryClient).parse(await client.getClientHistory(siteReference, withinHours));
+      all.sort((a, b) => (b.last_seen ?? 0) - (a.last_seen ?? 0));
+      const data = all.slice(0, limit).map((row) => HistoryClient.strip().parse(row));
+      return formatSuccess({ data, count: data.length, totalCount: all.length, limit, truncated: all.length > limit, withinHours, coverage: "Historical client inventory returned by the controller; not a complete session log." }, { structured: true });
+    } catch (err) { return formatError(err); }
+  });
+
+  server.registerTool("unifi_list_client_sessions", {
+    description: "Read retained past client connections, including disconnected clients, from the controller stat/session query endpoint. POST here only reads statistics. Rows carry only _id, mac, hostname, is_wired, assoc_time (epoch seconds), duration (seconds), rx_bytes/tx_bytes (controller perspective) and roaming_sessions when available. Use an explicit UTC epoch-second window (max 31 days). If mayBeTruncated is true, split the time window (overlap boundaries and deduplicate IDs) or filter by MAC. The controller ignores offset pagination. Records reflect controller retention and may omit ongoing sessions. Wi-Fi association/bytes do not establish end-to-end Internet success.",
+    inputSchema: {
+      siteReference,
+      start: z.number().int().min(0).max(4102444800).describe("Start Unix epoch seconds, not milliseconds"),
+      end: z.number().int().min(1).max(4102444800).describe("End Unix epoch seconds; after start and at most 31 days later"),
+      mac: z.string().regex(/^([\da-f]{2}:){5}[\da-f]{2}$/i).optional().describe("Optional client MAC address"),
+      limit: z.number().int().min(1).max(1000).default(100).describe("Maximum records; a full result requires a narrower window or MAC filter"),
+    },
+    outputSchema: listClientSessionsOutputSchema,
+    annotations: READ_ONLY,
+  }, async ({ siteReference, start, end, limit, mac }) => {
+    try {
+      if (end <= start || end - start > 31 * 86400) throw new Error("Use an increasing time window of at most 31 days");
+      const { data: rows } = ClientSessionEnvelope.parse(await client.getClientSessions(siteReference, { start, end, limit, mac }));
+      // The controller honours neither _start nor _limit reliably, and can
+      // repeat a session ID across roaming records. Normalise instead of
+      // rejecting: a usable page is better than an error with no data.
+      const seen = new Set<string>();
+      const deduped: typeof rows = [];
+      for (const row of rows) {
+        if (seen.has(row._id)) continue;
+        seen.add(row._id);
+        deduped.push(row);
+      }
+      const data = deduped.slice(0, limit).map((row) => ClientSession.strip().parse(row));
+      // Judge truncation by the page the controller sent: duplicates removed
+      // above say nothing about whether more sessions exist past it.
+      const mayBeTruncated = rows.length >= limit;
+      return formatSuccess({ data, count: data.length, limit, mayBeTruncated, start, end,
+        coverage: "Retained controller sessions; a non-truncated response does not prove retention coverage or include every ongoing connection." }, { structured: true });
+    } catch (err) { return formatError(err); }
+  });
+}

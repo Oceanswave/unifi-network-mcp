@@ -253,9 +253,19 @@ describe("traffic matching list name and items validation", () => {
         siteId: "site1",
         type: "PORTS",
         name: "Web Ports",
-        items: ["80", "443"],
+        items: [{ type: "PORT_NUMBER", value: 80 }, { type: "PORT_NUMBER", value: 443 }],
       });
       expect(result.success).toBe(true);
+    });
+
+    it("rejects plain-string items (the API takes tagged objects)", () => {
+      const result = schema.safeParse({
+        siteId: "site1",
+        type: "PORTS",
+        name: "Web Ports",
+        items: ["80", "443"],
+      });
+      expect(result.success).toBe(false);
     });
 
     it("rejects empty string name", () => {
@@ -263,7 +273,7 @@ describe("traffic matching list name and items validation", () => {
         siteId: "site1",
         type: "PORTS",
         name: "",
-        items: ["80"],
+        items: [{ type: "PORT_NUMBER", value: 80 }],
       });
       expect(result.success).toBe(false);
     });
@@ -288,7 +298,7 @@ describe("traffic matching list name and items validation", () => {
         trafficMatchingListId: "tml1",
         type: "PORTS",
         name: "Web Ports",
-        items: ["80", "443"],
+        items: [{ type: "PORT_NUMBER", value: 80 }, { type: "PORT_NUMBER", value: 443 }],
       });
       expect(result.success).toBe(true);
     });
@@ -299,7 +309,7 @@ describe("traffic matching list name and items validation", () => {
         trafficMatchingListId: "tml1",
         type: "PORTS",
         name: "",
-        items: ["80"],
+        items: [{ type: "PORT_NUMBER", value: 80 }],
       });
       expect(result.success).toBe(false);
     });
@@ -383,3 +393,29 @@ function buildMinimalInput(toolName: string): Record<string, unknown> {
   };
   return inputs[toolName] ?? { siteId: "site1" };
 }
+
+describe("resource ID parameters", () => {
+  // IDs are interpolated into request paths, so anything beyond the plain ID
+  // charset could smuggle a query (`?force=true`) or path into the request.
+  const idParams = [...configs].flatMap(([toolName, config]) =>
+    Object.keys(config.schema)
+      .filter((key) => key.endsWith("Id") && parseInputSchema(configs, toolName).shape[key].safeParse("abc").success)
+      .map((key) => [toolName, key] as const)
+  );
+
+  it("finds the ID parameters to check", () => {
+    expect(idParams.length).toBeGreaterThan(80);
+  });
+
+  for (const [toolName, key] of idParams) {
+    const schema = parseInputSchema(configs, toolName).shape[key];
+
+    it(`${toolName}.${key} accepts a UUID`, () => {
+      expect(schema.safeParse("3f2b6c1e-8a4d-4c2e-9b7a-1d2e3f4a5b6c").success).toBe(true);
+    });
+
+    it.each(["x?force=true", "../x", "..", ".", "x#", "x/y", "%2e%2e", ""])(`${toolName}.${key} rejects %j`, (value) => {
+      expect(schema.safeParse(value).success).toBe(false);
+    });
+  }
+});

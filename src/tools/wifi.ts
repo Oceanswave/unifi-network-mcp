@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { NetworkClient } from "../client.js";
@@ -10,11 +11,199 @@ import {
   DESTRUCTIVE,
   formatDryRun,
   requireConfirmation,
+  confirmDestructive,
+  requireConfirmationIf,
 } from "../utils/safety.js";
+import {
+  asObject,
+  definedEntries,
+  mergeForPut,
+  missingFields,
+  unsupportedFields,
+  type JsonObject,
+  withResourceLock,
+} from "../utils/full-put.js";
+import { containsRedacted, redactSecrets, restoreRedacted, REDACTED } from "../utils/secrets.js";
 import {
   listWifiOutputSchema,
   getWifiOutputSchema,
+  writeResult,
 } from "../utils/output-schemas.js";
+import { resourceId } from "../utils/params.js";
+
+// Request-body fields per broadcast type, from the 11.0.83 POST/PUT schemas.
+// IOT_OPTIMIZED accepts a strict subset of STANDARD.
+const IOT_OPTIMIZED_FIELDS = [
+  "type",
+  "name",
+  "network",
+  "enabled",
+  "securityConfiguration",
+  "broadcastingDeviceFilter",
+  "mdnsProxyConfiguration",
+  "multicastFilteringPolicy",
+  "multicastToUnicastConversionEnabled",
+  "clientIsolationEnabled",
+  "hideName",
+  "uapsdEnabled",
+  "channel2gLockedTo6",
+  "dtimPeriod2gLockedTo3",
+  "basicDataRateKbpsByFrequencyGHz",
+  "clientFilteringPolicy",
+  "blackoutScheduleConfiguration",
+] as const;
+
+const STANDARD_FIELDS = [
+  ...IOT_OPTIMIZED_FIELDS,
+  "broadcastingFrequenciesGHz",
+  "hotspotConfiguration",
+  "mloEnabled",
+  "bandSteeringEnabled",
+  "arpProxyEnabled",
+  "bssTransitionEnabled",
+  "advertiseDeviceName",
+  "dtimPeriodByFrequencyGHzOverride",
+  "dnsAssistanceConfiguration",
+  "handoffSuggestionsConfiguration",
+] as const;
+
+const IOT_OPTIMIZED_REQUIRED = [
+  "type",
+  "name",
+  "enabled",
+  "securityConfiguration",
+  "multicastToUnicastConversionEnabled",
+  "clientIsolationEnabled",
+  "hideName",
+  "uapsdEnabled",
+  "channel2gLockedTo6",
+  "dtimPeriod2gLockedTo3",
+] as const;
+
+const STANDARD_REQUIRED = [
+  ...IOT_OPTIMIZED_REQUIRED,
+  "broadcastingFrequenciesGHz",
+  "arpProxyEnabled",
+  "bssTransitionEnabled",
+  "advertiseDeviceName",
+] as const;
+
+function fieldsForType(type: unknown) {
+  if (type === "STANDARD") return { allowed: STANDARD_FIELDS, required: STANDARD_REQUIRED };
+  if (type === "IOT_OPTIMIZED") return { allowed: IOT_OPTIMIZED_FIELDS, required: IOT_OPTIMIZED_REQUIRED };
+  throw new Error(`Unsupported WiFi broadcast type: ${String(type)}`);
+}
+
+const frequencies = z
+  .array(z.union([z.enum(["2.4", "5", "6"]), z.literal(2.4), z.literal(5), z.literal(6)]))
+  .min(1)
+  .describe("Frequencies to broadcast on: 2.4, 5, 6 (strings or numbers; sent as unique numbers). STANDARD only.");
+
+const config = (description: string) =>
+  z.record(z.string(), z.unknown()).nullable().optional().describe(description);
+
+const flag = (description: string) => z.boolean().optional().describe(description);
+
+// Every body field as an optional input. Create tightens the core fields to
+// required; update keeps them optional and fills gaps from the current SSID.
+const wifiFields = {
+  name: z.string().min(1).optional().describe("SSID name"),
+  enabled: flag("Enable the WiFi network"),
+  type: z.enum(["STANDARD", "IOT_OPTIMIZED"]).optional().describe("WiFi type"),
+  broadcastingFrequenciesGHz: frequencies.optional(),
+  securityConfiguration: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(`Security configuration object (type, passphrase, presharedKeys[], pmfMode, …). A "${REDACTED}" value read from unifi_get_wifi is kept as the existing secret on update.`),
+  multicastToUnicastConversionEnabled: flag("Enable multicast to unicast conversion"),
+  clientIsolationEnabled: flag("Enable client isolation"),
+  hideName: flag("Hide SSID name"),
+  uapsdEnabled: flag("Enable Unscheduled Automatic Power Save Delivery"),
+  channel2gLockedTo6: flag("Lock 2.4GHz channel to 6 on all broadcasting devices"),
+  dtimPeriod2gLockedTo3: flag("Lock 2.4GHz DTIM period to 3"),
+  arpProxyEnabled: flag("Enable ARP proxy. STANDARD only."),
+  bssTransitionEnabled: flag("Enable BSS transition. STANDARD only."),
+  advertiseDeviceName: flag("Advertise device name in beacon frames. STANDARD only."),
+  mloEnabled: flag("Enable MLO (Multi-Link Operation). STANDARD only."),
+  bandSteeringEnabled: flag("Enable band steering. STANDARD only."),
+  network: config("Network reference, e.g. {type:'NATIVE'} or {type:'SPECIFIC', networkId:'<uuid>'} (live-observed). Omitted on PPSK SSIDs, where each presharedKeys[] entry carries its own network."),
+  broadcastingDeviceFilter: config("Custom scope of broadcasting devices. Null = broadcast from all AP-capable devices."),
+  mdnsProxyConfiguration: config("mDNS proxy configuration"),
+  multicastFilteringPolicy: config("Multicast filtering policy"),
+  basicDataRateKbpsByFrequencyGHz: config("Basic data rate in kbps by frequency"),
+  clientFilteringPolicy: config("Client MAC address filtering policy"),
+  blackoutScheduleConfiguration: config("Blackout schedule configuration"),
+  hotspotConfiguration: config("Hotspot configuration, e.g. {type:'CAPTIVE_PORTAL'}. STANDARD only."),
+  dtimPeriodByFrequencyGHzOverride: config("DTIM period override by frequency. STANDARD only."),
+  dnsAssistanceConfiguration: config("DNS assistance configuration. STANDARD only."),
+  handoffSuggestionsConfiguration: config("Handoff suggestions config (band5GHzRssiThreshold, band6GHzRssiThreshold). Null disables. STANDARD only."),
+};
+
+type WifiFieldValues = { [K in keyof typeof wifiFields]?: z.infer<(typeof wifiFields)[K]> };
+
+function toBodyFields(values: WifiFieldValues): JsonObject {
+  const { broadcastingFrequenciesGHz, ...rest } = values;
+  return definedEntries({
+    ...rest,
+    broadcastingFrequenciesGHz:
+      broadcastingFrequenciesGHz && [...new Set(broadcastingFrequenciesGHz.map(Number))],
+  });
+}
+
+function checkBody(body: JsonObject, updates: JsonObject) {
+  const { allowed, required } = fieldsForType(body.type);
+  const rejected = unsupportedFields(updates, allowed);
+  if (rejected.length > 0) {
+    throw new Error(`Fields not accepted for type ${String(body.type)}: ${rejected.join(", ")}`);
+  }
+  const missing = missingFields(body, required);
+  if (missing.length > 0) {
+    throw new Error(`Missing required fields for type ${String(body.type)}: ${missing.join(", ")}`);
+  }
+}
+
+function securityType(ssid: JsonObject): unknown {
+  const security = ssid.securityConfiguration;
+  return security !== null && typeof security === "object" && "type" in security ? security.type : undefined;
+}
+
+function isOpen(ssid: JsonObject): boolean {
+  const type = securityType(ssid);
+  return typeof type === "string" && type.toUpperCase() === "OPEN";
+}
+
+// On an open SSID, these decide who can join and what joining reaches.
+const OPEN_ACCESS_FIELDS = ["network", "hotspotConfiguration", "clientIsolationEnabled", "clientFilteringPolicy"] as const;
+
+/**
+ * What a WiFi write would open, if anything. before is undefined on create.
+ * An open SSID lets anyone in range join, so switching one on, or changing
+ * what it leads to or how joining is gated, counts as well as the security
+ * type itself.
+ */
+function wifiOpening(before: JsonObject | undefined, after: JsonObject): string | undefined {
+  if (before === undefined) return isOpen(after) ? "This creates an open SSID with no encryption" : undefined;
+  const [from, to] = [securityType(before), securityType(after)];
+  if (!isDeepStrictEqual(from, to)) return `This changes the SSID's security from ${String(from)} to ${String(to)}`;
+  if (!isOpen(after) || after.enabled === false) return undefined;
+  if (before.enabled === false) return "This enables an open SSID with no encryption";
+  const changed = OPEN_ACCESS_FIELDS.filter((field) => !isDeepStrictEqual(before[field], after[field]));
+  return changed.length > 0
+    ? `This changes who can join an open SSID, or what joining reaches (${changed.join(", ")})`
+    : undefined;
+}
+
+const confirmSecurity = z
+  .boolean()
+  .optional()
+  .describe("Set true to confirm creating or enabling an open SSID, changing an SSID's security type, or changing an open SSID's network, captive portal (hotspotConfiguration), client isolation or client filtering; not needed with dryRun: true");
+
+const includeSecrets = z
+  .boolean()
+  .optional()
+  .describe(`Return WiFi passphrases in plaintext instead of "${REDACTED}" (default: false). Only set this when the user explicitly needs the key.`);
+
+const readRedaction = `Passphrases (securityConfiguration.passphrase, presharedKeys[].passphrase) are returned as "${REDACTED}" unless includeSecrets is true.`;
 
 export function registerWifiTools(
   server: McpServer,
@@ -24,35 +213,36 @@ export function registerWifiTools(
   server.registerTool(
     "unifi_list_wifi",
     {
-      description: "List all WiFi broadcasts (SSIDs) at a site. Returns: id, name (SSID), enabled, type (STANDARD/IOT_OPTIMIZED), broadcastingFrequenciesGHz (2.4/5/6), securityConfiguration, hideName, bandSteeringEnabled, mloEnabled, network reference, broadcastingDeviceFilter (which APs broadcast it). Use for: SSID inventory. For per-AP radio state (channel, txPower), use unifi_get_device on the AP.",
+      description: `List all WiFi broadcasts (SSIDs) at a site. Returns (sparse list view, live-verified on 11.0.83): id, name (SSID), type (STANDARD/IOT_OPTIMIZED), enabled, metadata.origin, network reference (absent on PPSK SSIDs), securityConfiguration.type, broadcastingFrequenciesGHz, hotspotConfiguration (empty object when set). Booleans such as hideName/bandSteeringEnabled/clientIsolationEnabled, the full security configuration and optional configs are only returned by unifi_get_wifi. ${readRedaction} Use for: SSID inventory. For per-AP radio state (channel, txPower), use unifi_get_device on the AP.`,
       inputSchema: {
-        siteId: z.string().describe("Site ID"),
+        siteId: resourceId().describe("Site ID"),
         offset: z
           .number()
           .int()
           .nonnegative()
           .optional()
-          .describe("Number of records to skip (default: 0)"),
+          .describe("Number of records to skip"),
         limit: z
           .number()
           .int()
           .min(0)
           .max(200)
           .optional()
-          .describe("Number of records to return (default: 25, max: 200)"),
+          .describe("Number of records to return (API default: 25)"),
         filter: z
           .string()
           .optional()
-          .describe("Filter expression"),
+          .describe("Filter expression, e.g. enabled.eq(true)"),
+        includeSecrets,
       },
       outputSchema: listWifiOutputSchema,
       annotations: READ_ONLY,
     },
-    async ({ siteId, offset, limit, filter }) => {
+    async ({ siteId, offset, limit, filter, includeSecrets }) => {
       try {
         const query = buildQuery({ offset, limit, filter });
         const data = await client.get(`/sites/${siteId}/wifi/broadcasts${query}`);
-        return formatSuccess(data, { structured: true });
+        return formatSuccess(includeSecrets ? data : redactSecrets(data), { structured: true });
       } catch (err) {
         return formatError(err);
       }
@@ -62,20 +252,21 @@ export function registerWifiTools(
   server.registerTool(
     "unifi_get_wifi",
     {
-      description: "Get full configuration for a WiFi broadcast (SSID), including all optional fields not always returned by list: clientFilteringPolicy, blackoutScheduleConfiguration, hotspotConfiguration, mdnsProxyConfiguration, handoffSuggestionsConfiguration, dtimPeriodByFrequencyGHzOverride, etc.",
+      description: `Get full configuration for a WiFi broadcast (SSID). Returns the list fields plus the booleans (hideName, clientIsolationEnabled, uapsdEnabled, multicastToUnicastConversionEnabled, bandSteeringEnabled, arpProxyEnabled, bssTransitionEnabled, advertiseDeviceName, channel2gLockedTo6, dtimPeriod2gLockedTo3), the full securityConfiguration (type, pmfMode, fastRoamingEnabled, saeConfiguration, presharedKeys[] on PPSK SSIDs, …), and optional configs when configured (omitted otherwise): clientFilteringPolicy, blackoutScheduleConfiguration, hotspotConfiguration, mdnsProxyConfiguration, handoffSuggestionsConfiguration, dtimPeriodByFrequencyGHzOverride, broadcastingDeviceFilter, mloEnabled. ${readRedaction}`,
       inputSchema: {
-        siteId: z.string().describe("Site ID"),
-        wifiBroadcastId: z.string().describe("WiFi Broadcast ID"),
+        siteId: resourceId().describe("Site ID"),
+        wifiBroadcastId: resourceId().describe("WiFi Broadcast ID"),
+        includeSecrets,
       },
       outputSchema: getWifiOutputSchema,
       annotations: READ_ONLY,
     },
-    async ({ siteId, wifiBroadcastId }) => {
+    async ({ siteId, wifiBroadcastId, includeSecrets }) => {
       try {
         const data = await client.get(
           `/sites/${siteId}/wifi/broadcasts/${wifiBroadcastId}`
         );
-        return formatSuccess(data, { structured: true });
+        return formatSuccess(includeSecrets ? data : redactSecrets(data), { structured: true });
       } catch (err) {
         return formatError(err);
       }
@@ -87,176 +278,44 @@ export function registerWifiTools(
   server.registerTool(
     "unifi_create_wifi",
     {
-      description: "Create a new WiFi network (SSID)",
+      description: `Create a new WiFi network (SSID). Required for both types: type, name, enabled, securityConfiguration, multicastToUnicastConversionEnabled, clientIsolationEnabled, hideName, uapsdEnabled, channel2gLockedTo6, dtimPeriod2gLockedTo3. STANDARD additionally requires broadcastingFrequenciesGHz, arpProxyEnabled, bssTransitionEnabled, advertiseDeviceName; fields marked "STANDARD only" are rejected for IOT_OPTIMIZED (per 11.0.83 docs). The response echo has passphrases redacted. Idempotency: not safe to retry — re-running creates a duplicate SSID.`,
       inputSchema: {
-        siteId: z.string().describe("Site ID"),
-        name: z.string().describe("SSID name"),
+        siteId: resourceId().describe("Site ID"),
+        ...wifiFields,
+        name: z.string().min(1).describe("SSID name"),
         enabled: z.boolean().describe("Enable the WiFi network"),
         type: z.enum(["STANDARD", "IOT_OPTIMIZED"]).describe("WiFi type"),
-        broadcastingFrequenciesGHz: z
-          .array(z.enum(["2.4", "5", "6"]))
-          .describe("Frequencies to broadcast on. Accepted as strings and sent to the API as numbers (2.4, 5, 6)."),
         securityConfiguration: z
           .record(z.string(), z.unknown())
-          .describe("Security configuration object"),
-        multicastToUnicastConversionEnabled: z
-          .boolean()
-          .describe("Enable multicast to unicast conversion"),
-        clientIsolationEnabled: z
-          .boolean()
-          .describe("Enable client isolation"),
+          .describe("Security configuration object (type, passphrase, …)"),
+        multicastToUnicastConversionEnabled: z.boolean().describe("Enable multicast to unicast conversion"),
+        clientIsolationEnabled: z.boolean().describe("Enable client isolation"),
         hideName: z.boolean().describe("Hide SSID name"),
-        uapsdEnabled: z
-          .boolean()
-          .describe("Enable Unscheduled Automatic Power Save Delivery"),
-        arpProxyEnabled: z.boolean().describe("Enable ARP proxy"),
-        bssTransitionEnabled: z
-          .boolean()
-          .describe("Enable BSS transition"),
-        advertiseDeviceName: z
-          .boolean()
-          .describe("Advertise device name in beacon frames"),
-        channel2gLockedTo6: z
-          .boolean()
-          .describe("Lock 2.4GHz channel to 6 on all broadcasting devices"),
-        dtimPeriod2gLockedTo3: z
-          .boolean()
-          .describe("Lock 2.4GHz DTIM period to 3"),
-        network: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Network reference"),
-        broadcastingDeviceFilter: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Custom scope of broadcasting devices"),
-        mdnsProxyConfiguration: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("mDNS proxy configuration"),
-        multicastFilteringPolicy: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Multicast filtering policy"),
-        basicDataRateKbpsByFrequencyGHz: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Basic data rate in kbps by frequency"),
-        clientFilteringPolicy: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Client MAC address filtering policy"),
-        blackoutScheduleConfiguration: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Blackout schedule configuration"),
-        hotspotConfiguration: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Hotspot configuration"),
-        mloEnabled: z
-          .boolean()
-          .optional()
-          .describe("Enable MLO (Multi-Link Operation)"),
-        bandSteeringEnabled: z
-          .boolean()
-          .optional()
-          .describe("Enable band steering"),
-        dtimPeriodByFrequencyGHzOverride: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("DTIM period override by frequency"),
-        dnsAssistanceConfiguration: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("DNS assistance configuration"),
-        handoffSuggestionsConfiguration: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Handoff suggestions config (band5GHzRssiThreshold, band6GHzRssiThreshold). Null disables"),
+        uapsdEnabled: z.boolean().describe("Enable Unscheduled Automatic Power Save Delivery"),
+        channel2gLockedTo6: z.boolean().describe("Lock 2.4GHz channel to 6 on all broadcasting devices"),
+        dtimPeriod2gLockedTo3: z.boolean().describe("Lock 2.4GHz DTIM period to 3"),
+        confirm: confirmSecurity,
         dryRun: z
           .boolean()
           .optional()
           .describe("Preview this action without executing it"),
       },
-      outputSchema: getWifiOutputSchema,
+      outputSchema: writeResult(getWifiOutputSchema),
       annotations: WRITE_NOT_IDEMPOTENT,
     },
-    async ({
-      siteId,
-      name,
-      enabled,
-      type,
-      broadcastingFrequenciesGHz,
-      securityConfiguration,
-      multicastToUnicastConversionEnabled,
-      clientIsolationEnabled,
-      hideName,
-      uapsdEnabled,
-      arpProxyEnabled,
-      bssTransitionEnabled,
-      advertiseDeviceName,
-      channel2gLockedTo6,
-      dtimPeriod2gLockedTo3,
-      network,
-      broadcastingDeviceFilter,
-      mdnsProxyConfiguration,
-      multicastFilteringPolicy,
-      basicDataRateKbpsByFrequencyGHz,
-      clientFilteringPolicy,
-      blackoutScheduleConfiguration,
-      hotspotConfiguration,
-      mloEnabled,
-      bandSteeringEnabled,
-      dtimPeriodByFrequencyGHzOverride,
-      dnsAssistanceConfiguration,
-      handoffSuggestionsConfiguration,
-      dryRun,
-    }) => {
+    async ({ siteId, confirm, dryRun, ...fields }) => {
       try {
-        const body: Record<string, unknown> = {
-          name,
-          enabled,
-          type,
-          broadcastingFrequenciesGHz: broadcastingFrequenciesGHz.map(Number),
-          securityConfiguration,
-          multicastToUnicastConversionEnabled,
-          clientIsolationEnabled,
-          hideName,
-          uapsdEnabled,
-          arpProxyEnabled,
-          bssTransitionEnabled,
-          advertiseDeviceName,
-          channel2gLockedTo6,
-          dtimPeriod2gLockedTo3,
-        };
-        if (network !== undefined) body.network = network;
-        if (broadcastingDeviceFilter !== undefined)
-          body.broadcastingDeviceFilter = broadcastingDeviceFilter;
-        if (mdnsProxyConfiguration !== undefined)
-          body.mdnsProxyConfiguration = mdnsProxyConfiguration;
-        if (multicastFilteringPolicy !== undefined)
-          body.multicastFilteringPolicy = multicastFilteringPolicy;
-        if (basicDataRateKbpsByFrequencyGHz !== undefined)
-          body.basicDataRateKbpsByFrequencyGHz = basicDataRateKbpsByFrequencyGHz;
-        if (clientFilteringPolicy !== undefined)
-          body.clientFilteringPolicy = clientFilteringPolicy;
-        if (blackoutScheduleConfiguration !== undefined)
-          body.blackoutScheduleConfiguration = blackoutScheduleConfiguration;
-        if (hotspotConfiguration !== undefined)
-          body.hotspotConfiguration = hotspotConfiguration;
-        if (mloEnabled !== undefined) body.mloEnabled = mloEnabled;
-        if (bandSteeringEnabled !== undefined)
-          body.bandSteeringEnabled = bandSteeringEnabled;
-        if (dtimPeriodByFrequencyGHzOverride !== undefined)
-          body.dtimPeriodByFrequencyGHzOverride = dtimPeriodByFrequencyGHzOverride;
-        if (dnsAssistanceConfiguration !== undefined)
-          body.dnsAssistanceConfiguration = dnsAssistanceConfiguration;
-        if (handoffSuggestionsConfiguration !== undefined)
-          body.handoffSuggestionsConfiguration = handoffSuggestionsConfiguration;
-        if (dryRun) return formatDryRun("POST", `/sites/${siteId}/wifi/broadcasts`, body);
+        const body = toBodyFields(fields);
+        checkBody(body, body);
+        const opening = wifiOpening(undefined, body);
+        const guard = requireConfirmationIf(opening, confirm, dryRun);
+        if (guard) return guard;
+        if (containsRedacted(body)) {
+          throw new Error(`securityConfiguration contains "${REDACTED}" — a new SSID needs the real passphrase`);
+        }
+        if (dryRun) return formatDryRun("POST", `/sites/${siteId}/wifi/broadcasts`, redactSecrets(body), opening);
         const data = await client.post(`/sites/${siteId}/wifi/broadcasts`, body);
-        return formatSuccess(data, { structured: true });
+        return formatSuccess(redactSecrets(data), { structured: true });
       } catch (err) {
         return formatError(err);
       }
@@ -266,211 +325,36 @@ export function registerWifiTools(
   server.registerTool(
     "unifi_update_wifi",
     {
-      description: "Update an existing WiFi network. NOTE: this is a full PUT — API 10.6.106 documents 14 of these fields as required (type, name, enabled, securityConfiguration, multicastToUnicastConversionEnabled, clientIsolationEnabled, hideName, uapsdEnabled, channel2gLockedTo6, dtimPeriod2gLockedTo3, broadcastingFrequenciesGHz, arpProxyEnabled, bssTransitionEnabled, advertiseDeviceName). They are optional here for convenience, but a sparse update may be rejected by the API — read the current values with unifi_get_wifi and resend the full set if you get a 400.",
+      description: `Update an existing WiFi network. Pass only the fields to change. The API's PUT replaces the whole SSID and requires every documented required field, so this tool reads the current SSID, keeps every documented body field, overlays your changes and sends the full body — omitted fields keep their current values instead of being reset. Pass null to clear an optional config (e.g. broadcastingDeviceFilter: null broadcasts from all APs). Top-level objects are replaced whole: to change one security setting, start from the securityConfiguration unifi_get_wifi returns and edit it, since a partial object drops the passphrase or presharedKeys it omits. Passphrases are kept if you omit securityConfiguration or echo its "${REDACTED}" values; send a new one to change it. dryRun shows the merged body (secrets redacted).`,
       inputSchema: {
-        siteId: z.string().describe("Site ID"),
-        wifiBroadcastId: z.string().describe("WiFi Broadcast ID"),
-        name: z.string().optional().describe("SSID name"),
-        enabled: z.boolean().optional().describe("Enable the WiFi network"),
-        type: z
-          .enum(["STANDARD", "IOT_OPTIMIZED"])
-          .optional()
-          .describe("WiFi type"),
-        broadcastingFrequenciesGHz: z
-          .array(z.enum(["2.4", "5", "6"]))
-          .optional()
-          .describe("Frequencies to broadcast on. Accepted as strings and sent to the API as numbers (2.4, 5, 6)."),
-        securityConfiguration: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Security configuration object"),
-        multicastToUnicastConversionEnabled: z
-          .boolean()
-          .optional()
-          .describe("Enable multicast to unicast conversion"),
-        clientIsolationEnabled: z
-          .boolean()
-          .optional()
-          .describe("Enable client isolation"),
-        hideName: z.boolean().optional().describe("Hide SSID name"),
-        uapsdEnabled: z
-          .boolean()
-          .optional()
-          .describe("Enable Unscheduled Automatic Power Save Delivery"),
-        arpProxyEnabled: z
-          .boolean()
-          .optional()
-          .describe("Enable ARP proxy"),
-        bssTransitionEnabled: z
-          .boolean()
-          .optional()
-          .describe("Enable BSS transition"),
-        advertiseDeviceName: z
-          .boolean()
-          .optional()
-          .describe("Advertise device name in beacon frames"),
-        channel2gLockedTo6: z
-          .boolean()
-          .optional()
-          .describe("Lock 2.4GHz channel to 6 on all broadcasting devices"),
-        dtimPeriod2gLockedTo3: z
-          .boolean()
-          .optional()
-          .describe("Lock 2.4GHz DTIM period to 3"),
-        network: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Network reference"),
-        broadcastingDeviceFilter: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Custom scope of broadcasting devices"),
-        mdnsProxyConfiguration: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("mDNS proxy configuration"),
-        multicastFilteringPolicy: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Multicast filtering policy"),
-        basicDataRateKbpsByFrequencyGHz: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Basic data rate in kbps by frequency"),
-        clientFilteringPolicy: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Client MAC address filtering policy"),
-        blackoutScheduleConfiguration: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Blackout schedule configuration"),
-        hotspotConfiguration: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Hotspot configuration"),
-        mloEnabled: z
-          .boolean()
-          .optional()
-          .describe("Enable MLO (Multi-Link Operation)"),
-        bandSteeringEnabled: z
-          .boolean()
-          .optional()
-          .describe("Enable band steering"),
-        dtimPeriodByFrequencyGHzOverride: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("DTIM period override by frequency"),
-        dnsAssistanceConfiguration: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("DNS assistance configuration"),
-        handoffSuggestionsConfiguration: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Handoff suggestions config (band5GHzRssiThreshold, band6GHzRssiThreshold). Null disables"),
+        siteId: resourceId().describe("Site ID"),
+        wifiBroadcastId: resourceId().describe("WiFi Broadcast ID"),
+        ...wifiFields,
+        confirm: confirmSecurity,
         dryRun: z
           .boolean()
           .optional()
-          .describe("Preview this action without executing it"),
+          .describe("Preview the merged PUT body without executing it (still reads the current SSID)"),
       },
-      outputSchema: getWifiOutputSchema,
+      outputSchema: writeResult(getWifiOutputSchema),
       annotations: WRITE,
     },
-    async ({
-      siteId,
-      wifiBroadcastId,
-      name,
-      enabled,
-      type,
-      broadcastingFrequenciesGHz,
-      securityConfiguration,
-      multicastToUnicastConversionEnabled,
-      clientIsolationEnabled,
-      hideName,
-      uapsdEnabled,
-      arpProxyEnabled,
-      bssTransitionEnabled,
-      advertiseDeviceName,
-      channel2gLockedTo6,
-      dtimPeriod2gLockedTo3,
-      network,
-      broadcastingDeviceFilter,
-      mdnsProxyConfiguration,
-      multicastFilteringPolicy,
-      basicDataRateKbpsByFrequencyGHz,
-      clientFilteringPolicy,
-      blackoutScheduleConfiguration,
-      hotspotConfiguration,
-      mloEnabled,
-      bandSteeringEnabled,
-      dtimPeriodByFrequencyGHzOverride,
-      dnsAssistanceConfiguration,
-      handoffSuggestionsConfiguration,
-      dryRun,
-    }) => {
+    async ({ siteId, wifiBroadcastId, confirm, dryRun, ...fields }) => {
       try {
-        const body: Record<string, unknown> = {};
-        if (name !== undefined) body.name = name;
-        if (enabled !== undefined) body.enabled = enabled;
-        if (type !== undefined) body.type = type;
-        if (broadcastingFrequenciesGHz !== undefined)
-          body.broadcastingFrequenciesGHz = broadcastingFrequenciesGHz.map(
-            Number
-          );
-        if (securityConfiguration !== undefined)
-          body.securityConfiguration = securityConfiguration;
-        if (multicastToUnicastConversionEnabled !== undefined)
-          body.multicastToUnicastConversionEnabled =
-            multicastToUnicastConversionEnabled;
-        if (clientIsolationEnabled !== undefined)
-          body.clientIsolationEnabled = clientIsolationEnabled;
-        if (hideName !== undefined) body.hideName = hideName;
-        if (uapsdEnabled !== undefined) body.uapsdEnabled = uapsdEnabled;
-        if (arpProxyEnabled !== undefined) body.arpProxyEnabled = arpProxyEnabled;
-        if (bssTransitionEnabled !== undefined)
-          body.bssTransitionEnabled = bssTransitionEnabled;
-        if (advertiseDeviceName !== undefined)
-          body.advertiseDeviceName = advertiseDeviceName;
-        if (channel2gLockedTo6 !== undefined)
-          body.channel2gLockedTo6 = channel2gLockedTo6;
-        if (dtimPeriod2gLockedTo3 !== undefined)
-          body.dtimPeriod2gLockedTo3 = dtimPeriod2gLockedTo3;
-        if (network !== undefined) body.network = network;
-        if (broadcastingDeviceFilter !== undefined)
-          body.broadcastingDeviceFilter = broadcastingDeviceFilter;
-        if (mdnsProxyConfiguration !== undefined)
-          body.mdnsProxyConfiguration = mdnsProxyConfiguration;
-        if (multicastFilteringPolicy !== undefined)
-          body.multicastFilteringPolicy = multicastFilteringPolicy;
-        if (basicDataRateKbpsByFrequencyGHz !== undefined)
-          body.basicDataRateKbpsByFrequencyGHz = basicDataRateKbpsByFrequencyGHz;
-        if (clientFilteringPolicy !== undefined)
-          body.clientFilteringPolicy = clientFilteringPolicy;
-        if (blackoutScheduleConfiguration !== undefined)
-          body.blackoutScheduleConfiguration = blackoutScheduleConfiguration;
-        if (hotspotConfiguration !== undefined)
-          body.hotspotConfiguration = hotspotConfiguration;
-        if (mloEnabled !== undefined) body.mloEnabled = mloEnabled;
-        if (bandSteeringEnabled !== undefined)
-          body.bandSteeringEnabled = bandSteeringEnabled;
-        if (dtimPeriodByFrequencyGHzOverride !== undefined)
-          body.dtimPeriodByFrequencyGHzOverride = dtimPeriodByFrequencyGHzOverride;
-        if (dnsAssistanceConfiguration !== undefined)
-          body.dnsAssistanceConfiguration = dnsAssistanceConfiguration;
-        if (handoffSuggestionsConfiguration !== undefined)
-          body.handoffSuggestionsConfiguration = handoffSuggestionsConfiguration;
-        if (dryRun)
-          return formatDryRun(
-            "PUT",
-            `/sites/${siteId}/wifi/broadcasts/${wifiBroadcastId}`,
-            body
-          );
-        const data = await client.put(
-          `/sites/${siteId}/wifi/broadcasts/${wifiBroadcastId}`,
-          body
-        );
-        return formatSuccess(data, { structured: true });
+        const path = `/sites/${siteId}/wifi/broadcasts/${wifiBroadcastId}`;
+        return await withResourceLock(path, async () => {
+          const current = asObject(await client.get(path), "the current WiFi broadcast");
+          const updates = restoreRedacted(toBodyFields(fields), current) as JsonObject;
+          const { allowed } = fieldsForType(updates.type ?? current.type);
+          const body = mergeForPut(current, updates, allowed);
+          checkBody(body, updates);
+          const opening = wifiOpening(current, body);
+          const guard = requireConfirmationIf(opening, confirm, dryRun);
+          if (guard) return guard;
+          if (dryRun) return formatDryRun("PUT", path, redactSecrets(body), opening);
+          const data = await client.put(path, body);
+          return formatSuccess(redactSecrets(data), { structured: true });
+        });
       } catch (err) {
         return formatError(err);
       }
@@ -482,17 +366,14 @@ export function registerWifiTools(
     {
       description: "DESTRUCTIVE: Delete a WiFi network — all clients on this SSID will be disconnected",
       inputSchema: {
-        siteId: z.string().describe("Site ID"),
-        wifiBroadcastId: z.string().describe("WiFi Broadcast ID"),
+        siteId: resourceId().describe("Site ID"),
+        wifiBroadcastId: resourceId().describe("WiFi Broadcast ID"),
         force: z
           .boolean()
           .optional()
           .default(false)
           .describe("Force delete (default: false)"),
-        confirm: z
-          .boolean()
-          .optional()
-          .describe("Must be true to execute this destructive action"),
+        confirm: confirmDestructive(),
         dryRun: z
           .boolean()
           .optional()
@@ -501,7 +382,7 @@ export function registerWifiTools(
       annotations: DESTRUCTIVE,
     },
     async ({ siteId, wifiBroadcastId, force, confirm, dryRun }) => {
-      const guard = requireConfirmation(confirm, "This will delete the WiFi network and disconnect all clients on this SSID");
+      const guard = dryRun ? null : requireConfirmation(confirm, "This will delete the WiFi network and disconnect all clients on this SSID");
       if (guard) return guard;
 
       try {

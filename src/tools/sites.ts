@@ -20,18 +20,18 @@ export function registerSiteTools(
           .int()
           .nonnegative()
           .optional()
-          .describe("Number of records to skip (default: 0)"),
+          .describe("Number of records to skip"),
         limit: z
           .number()
           .int()
           .min(0)
           .max(200)
           .optional()
-          .describe("Number of records to return (default: 25, max: 200)"),
+          .describe("Number of records to return (API default: 25)"),
         filter: z
           .string()
           .optional()
-          .describe("Filter expression (e.g., name.like('office*'))"),
+          .describe("Filter expression. Filterable: id, internalReference, name — eq/ne/in/notIn only (like is rejected). Example: name.eq('Default')"),
       },
       outputSchema: listSitesOutputSchema,
       annotations: READ_ONLY,
