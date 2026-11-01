@@ -4,10 +4,14 @@ import { NetworkClient } from "../src/client.js";
 const fetchMock = vi.hoisted(() => vi.fn());
 vi.mock("undici", async (importOriginal) => ({ ...await importOriginal<typeof import("undici")>(), fetch: fetchMock }));
 
+const FAKE = "FAKE-SECRET-DO-NOT-USE";
 const config = { host: "console.example", apiKey: "test-secret", verifySsl: true, readOnly: true };
 const envelope = (data: unknown[]) => ({ meta: { rc: "ok" }, data });
 const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), {
   status, headers: { "Content-Type": "application/json" },
+});
+const socketClosed = (code: string) => Object.assign(new TypeError("fetch failed"), {
+  cause: Object.assign(new Error("other side closed"), { code }),
 });
 
 describe("classic controller transport", () => {
@@ -32,11 +36,11 @@ describe("classic controller transport", () => {
   });
 
   it.each([401, 403, 404, 500])("surfaces HTTP %i without leaking the response or calling it empty", async (status) => {
-    fetchMock.mockResolvedValue(response({ x_passphrase: "FAKE-SECRET-DO-NOT-USE" }, status));
+    fetchMock.mockResolvedValue(response({ x_passphrase: FAKE }, status));
     const attempt = new NetworkClient(config).getClassic("default", "networkconf");
     await expect(attempt).rejects.toThrow(`Classic controller API returned HTTP ${status}`);
     await expect(attempt).rejects.toThrow("not an empty result");
-    await expect(attempt).rejects.not.toThrow("FAKE-SECRET");
+    await expect(attempt).rejects.not.toThrow(FAKE);
   });
 
   it("rejects legacy errors wrapped in HTTP 200", async () => {
@@ -55,6 +59,31 @@ describe("classic controller transport", () => {
     }), { headers: { "Content-Type": "application/json" } }));
     await expect(new NetworkClient(config).getClassic("default", "networkconf"))
       .rejects.toThrow(/did not respond within 25s\. Retry/);
+  });
+
+  it("retries once on a fresh connection when the console closed an idle one", async () => {
+    fetchMock.mockRejectedValueOnce(socketClosed("ECONNRESET")).mockResolvedValueOnce(response(envelope([{ _id: "c1" }])));
+    await expect(new NetworkClient(config).getClassic("default", "networkconf")).resolves.toEqual(envelope([{ _id: "c1" }]));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives up after one retry", async () => {
+    fetchMock.mockRejectedValue(socketClosed("UND_ERR_SOCKET"));
+    await expect(new NetworkClient(config).getClassic("default", "networkconf")).rejects.toThrow("fetch failed");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a failure that is not a closed socket", async () => {
+    fetchMock.mockRejectedValue(new TypeError("fetch failed"));
+    await expect(new NetworkClient(config).getClassic("default", "networkconf")).rejects.toThrow("fetch failed");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports malformed JSON without quoting the body, which can hold credentials", async () => {
+    fetchMock.mockResolvedValue(new Response(`{"x_passphrase":"${FAKE}"`, { headers: { "Content-Type": "application/json" } }));
+    const attempt = new NetworkClient(config).getClassic("default", "networkconf");
+    await expect(attempt).rejects.toThrow("returned malformed JSON");
+    await expect(attempt).rejects.not.toThrow(FAKE);
   });
 
   it("bounds response size before JSON parsing", async () => {
