@@ -12,7 +12,8 @@ permissions:
 
 # A push to main gets its own group per commit: GitHub keeps only one pending
 # run per group, so during a burst of merges a shared group would cancel the
-# CI run - and with it the release run - of a commit that should be released.
+# CI run of a commit, leaving it with no result to check before publishing a
+# release from it.
 concurrency:
   group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -106,4 +107,4 @@ jobs:
           # vulnerable ("Supported files for scanner(s) not found" in run
           # 35399411224). v0.74.0 reads both documents. Remove this pin once a
           # trivy-action release ships v0.74.0+ as its default.
-          version: v0.76.0
+          version: v0.76.1
