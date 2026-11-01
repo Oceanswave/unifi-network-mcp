@@ -8,6 +8,7 @@ import { NetworkClient } from "../src/client.js";
 import { formatDryRun } from "../src/utils/safety.js";
 import { createMockServer, createMockClient, mockFn, answerWanLookups } from "./tools/_helpers.js";
 
+const FAKE = "FAKE-SECRET-DO-NOT-USE";
 const fetchMock = vi.hoisted(() => vi.fn());
 vi.mock("undici", async (importOriginal) => ({ ...await importOriginal<typeof import("undici")>(), fetch: fetchMock }));
 
@@ -144,12 +145,12 @@ describe("output schemas through the SDK", () => {
   it("returns classic networks without the credentials the controller sent", async () => {
     mockFn(toolClient, "getClassic").mockResolvedValueOnce({
       meta: { rc: "ok" },
-      data: [{ _id: "c1", name: "Internet 1", purpose: "wan", vlan: null, x_wan_password: "FAKE-SECRET-DO-NOT-USE" }],
+      data: [{ _id: "c1", name: "Internet 1", purpose: "wan", vlan: null, x_wan_password: FAKE }],
     });
     const result = await mcpClient.callTool({ name: "unifi_list_classic_networks", arguments: { siteReference: "default" } });
     expect(result.isError).toBeFalsy();
     expect(result.structuredContent).toEqual({ data: [{ _id: "c1", name: "Internet 1", purpose: "wan", vlan: null }], count: 1, siteReference: "default" });
-    expect(JSON.stringify(result)).not.toContain("FAKE-SECRET");
+    expect(JSON.stringify(result)).not.toContain(FAKE);
   });
 });
 
