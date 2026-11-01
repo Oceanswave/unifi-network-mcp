@@ -8,6 +8,7 @@ import { NetworkClient } from "../src/client.js";
 import { formatDryRun } from "../src/utils/safety.js";
 import { createMockServer, createMockClient, mockFn, answerWanLookups } from "./tools/_helpers.js";
 
+const FAKE = "FAKE-SECRET-DO-NOT-USE";
 const fetchMock = vi.hoisted(() => vi.fn());
 vi.mock("undici", async (importOriginal) => ({ ...await importOriginal<typeof import("undici")>(), fetch: fetchMock }));
 
@@ -144,7 +145,7 @@ describe("output schemas through the SDK", () => {
   it("returns port forwards without fields the allowlist does not name", async () => {
     mockFn(toolClient, "getClassic").mockResolvedValueOnce({
       meta: { rc: "ok" },
-      data: [{ _id: "f1", name: "Web", enabled: true, dst_port: "443", fwd: "192.0.2.20", fwd_port: "443", x_secret: "FAKE-SECRET-DO-NOT-USE" }],
+      data: [{ _id: "f1", name: "Web", enabled: true, dst_port: "443", fwd: "192.0.2.20", fwd_port: "443", x_secret: FAKE }],
     });
     const result = await mcpClient.callTool({ name: "unifi_list_port_forwards", arguments: { siteReference: "default" } });
     expect(result.isError).toBeFalsy();
@@ -152,7 +153,7 @@ describe("output schemas through the SDK", () => {
       data: [{ _id: "f1", name: "Web", enabled: true, dst_port: "443", fwd: "192.0.2.20", fwd_port: "443" }],
       count: 1, enabledCount: 1, siteReference: "default",
     });
-    expect(JSON.stringify(result)).not.toContain("FAKE-SECRET");
+    expect(JSON.stringify(result)).not.toContain(FAKE);
   });
 
   it("returns the settings-backed exposure results, unavailable ones included", async () => {

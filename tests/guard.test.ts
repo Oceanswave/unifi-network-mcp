@@ -5,6 +5,8 @@ import { GuardError, ROUTES, guardRequest, type GuardPolicy, type Route } from "
 import { registerAllTools } from "../src/tools/index.js";
 import { createMockServer } from "./tools/_helpers.js";
 
+const FAKE = "FAKE-SECRET-DO-NOT-USE";
+
 // The client calls undici's fetch rather than the global one, so mock that.
 const fetchMock = vi.hoisted(() => vi.fn());
 vi.mock("undici", async (importOriginal) => ({ ...await importOriginal<typeof import("undici")>(), fetch: fetchMock }));
@@ -29,8 +31,8 @@ const page = (data: unknown[]) => ({ offset: 0, limit: 200, count: data.length, 
 function controller(method: string, path: string): unknown {
   if (method !== "GET") return path.endsWith("/stat/session") ? { meta: { rc: "ok" }, data: [] } : { id: "new" };
   if (path.includes("/clients/history")) return [];
-  if (/\/api\/s\/[^/]+\/rest\//.test(path)) return { meta: { rc: "ok" }, data: [{ _id: "c1", name: "LAN", x_passphrase: "FAKE-SECRET-DO-NOT-USE" }] };
-  if (path.endsWith("/get/setting")) return { meta: { rc: "ok" }, data: [{ _id: "c2", key: "mgmt", x_ssh_enabled: false, x_ssh_password: "FAKE-SECRET-DO-NOT-USE" }] };
+  if (/\/api\/s\/[^/]+\/rest\//.test(path)) return { meta: { rc: "ok" }, data: [{ _id: "c1", name: "LAN", x_passphrase: FAKE }] };
+  if (path.endsWith("/get/setting")) return { meta: { rc: "ok" }, data: [{ _id: "c2", key: "mgmt", x_ssh_enabled: false, x_ssh_password: FAKE }] };
   if (path.endsWith("/firewall/zones")) return page(zones);
   if (/\/wifi\/broadcasts\/[^/]+$/.test(path)) {
     return {
@@ -196,6 +198,8 @@ describe("request guard", () => {
     it.each(["ordering", "Ordering"])("accepts %s as a site internalReference", (site) => {
       expect(guardRequest("GET", `/v2/api/site/${site}/clients/history?withinHours=1`, WRITE).template).toContain("/clients/history");
       expect(guardRequest("POST", `/api/s/${site}/stat/session`, WRITE).template).toContain("/stat/session");
+      expect(guardRequest("GET", `/api/s/${site}/rest/portforward`, WRITE).template).toBe("/api/s/{site}/rest/portforward");
+      expect(guardRequest("GET", `/api/s/${site}/get/setting`, WRITE).template).toBe("/api/s/{site}/get/setting");
     });
 
     it.each(["HEAD", "OPTIONS", "TRACE", "CONNECT", "get", "PROPFIND"])("refuses method %s", (method) => {
